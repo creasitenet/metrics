@@ -1,0 +1,176 @@
+{# Live dashboard body: HTMX swaps this whole node on a timer. #}
+{% set chart_metrics = ['docker.host.cpu_percent', 'docker.host.memory_used_bytes'] %}
+{% set tile_metrics = ['docker.host.cpu_percent', 'docker.host.memory_used_bytes', 'docker.host.cpu_count', 'docker.host.memory_total_bytes'] %}
+<div
+    id="dashboard-live"
+    class="dashboard-live"
+    hx-get="{{ path('app_dashboard_live', {period: period}) }}"
+    hx-trigger="every {{ refresh_seconds }}s[!document.hidden]"
+    hx-swap="outerHTML"
+>
+    <p class="live-count">{{ container_count }} container{{ container_count != 1 ? 's' : '' }}</p>
+
+    {% if host_series %}
+    <section class="section-block">
+        <div class="section-head section-head-split">
+            <div>
+                <span class="eyebrow">HOST</span>
+                <h2>Resource overview</h2>
+            </div>
+            <p class="host-meta" aria-label="Host details">
+                {% if host_series['docker.host.cpu_count'] is defined %}
+                    <span>CPU scale: <b>100% = 1 CPU</b> · host has <b>{{ host_series['docker.host.cpu_count'].latest|number_format(0, '.', ',') }}</b> CPUs (max ~{{ (host_series['docker.host.cpu_count'].latest * 100)|number_format(0, '.', ',') }}%).</span>
+                {% endif %}
+                {% if host_series['docker.containers.total'] is defined %}
+                    <span>Containers : <b>{{ host_series['docker.containers.total'].latest|number_format(0, '.', ',') }}</b> total,</span>
+                {% endif %}
+                {% if host_series['docker.containers.running'] is defined %}
+                    <span><b>{{ host_series['docker.containers.running'].latest|number_format(0, '.', ',') }}</b> running,</span>
+                {% endif %}
+                {% if host_series['docker.containers.stopped'] is defined %}
+                    <span><b>{{ host_series['docker.containers.stopped'].latest|number_format(0, '.', ',') }}</b> stopped.</span>
+                {% endif %}
+                {% if host_series['docker.host.images_total'] is defined %}
+                    <span>- <b>{{ host_series['docker.host.images_total'].latest|number_format(0, '.', ',') }}</b> images</span>
+                {% endif %}
+                {% if host_series['docker.host.goroutines'] is defined %}
+                    <span>- <b>{{ host_series['docker.host.goroutines'].latest|number_format(0, '.', ',') }}</b> goroutines</span>
+                {% endif %}
+                {% if host_series['docker.host.fds_open'] is defined %}
+                    <span>- <b>{{ host_series['docker.host.fds_open'].latest|number_format(0, '.', ',') }}</b> fds</span>
+                {% endif %}
+            </p>
+        </div>
+
+        <div class="host-stats host-stats-compact">
+            {% for name in tile_metrics %}
+                {% if host_series[name] is defined %}
+                {% set data = host_series[name] %}
+                <div class="stat-tile{{ name in chart_metrics ? ' stat-tile-primary' : '' }}">
+                    <span class="metric-type">{{ name in chart_metrics ? 'LIVE' : 'INFO' }}</span>
+                    <strong>
+                        {% if name ends with '_bytes' %}
+                            {{ data.latest|format_bytes }}
+                        {% elseif name ends with '_percent' %}
+                            {{ data.latest|number_format(1, '.', ',') }}%
+                        {% else %}
+                            {{ data.latest|number_format(0, '.', ',') }}
+                        {% endif %}
+                    </strong>
+                    <code>
+                        {% if name == 'docker.host.cpu_percent' %}CPU (sum · 100%=1 CPU)
+                        {% elseif name == 'docker.host.memory_used_bytes' %}Memory used
+                        {% elseif name == 'docker.host.cpu_count' %}CPUs
+                        {% elseif name == 'docker.host.memory_total_bytes' %}Memory total
+                        {% else %}{{ name }}{% endif %}
+                    </code>
+                </div>
+                {% endif %}
+            {% endfor %}
+        </div>
+
+        <div class="metric-grid">
+            {% for name in chart_metrics %}
+                {% if host_series[name] is defined %}
+                {% set data = host_series[name] %}
+                <article class="metric-card">
+                    <header>
+                        <div>
+                            <span class="metric-type">HOST</span>
+                            <h2>
+                                {% if name == 'docker.host.cpu_percent' %}CPU %
+                                    {% if host_series['docker.host.cpu_count'] is defined %}
+                                        <small class="muted">(100%=1 of {{ host_series['docker.host.cpu_count'].latest|number_format(0, '.', ',') }})</small>
+                                    {% endif %}
+                                {% elseif name == 'docker.host.memory_used_bytes' %}Memory
+                                {% else %}{{ name }}{% endif %}
+                            </h2>
+                        </div>
+                        <div class="latest">
+                            <b>
+                                {% if name ends with '_bytes' %}
+                                    {{ data.latest|format_bytes }}
+                                {% else %}
+                                    {{ data.latest|number_format(1, '.', ',') }}%
+                                {% endif %}
+                            </b>
+                            <span>LATEST</span>
+                        </div>
+                    </header>
+                    <div class="chart-wrap">
+                        <canvas id="host-chart-{{ name|replace({'.': '-'}) }}" aria-label="{{ name }}"></canvas>
+                    </div>
+                </article>
+                {% endif %}
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="section-block">
+        <div class="section-head"><span class="eyebrow">CONTAINERS</span><h2>Collected metrics</h2></div>
+        {% if groups %}
+            {% for group, containers in groups %}
+                <div class="compose-group">
+                    <h3>{{ group == 'ungrouped' ? 'Other containers' : group }}</h3>
+                    <div class="container-table-wrap">
+                        <table class="container-table">
+                            <colgroup>
+                                <col class="col-name">
+                                <col class="col-state">
+                                <col class="col-state">
+                                <col class="col-image">
+                                <col class="col-cpu">
+                                <col class="col-mem">
+                            </colgroup>
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>State</th>
+                                    <th>Status</th>
+                                    <th>Image</th>
+                                    <th>CPU % <span class="muted" title="Same scale as docker stats: 100% = one full CPU core">*</span></th>
+                                    <th>Memory</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            {% for c in containers %}
+                                <tr>
+                                    <td class="cell-name">
+                                        <a href="{{ path('app_container_show', {id: c.short_id, period: period}) }}" title="{{ c.name }}">
+                                            <code>{{ c.name }}</code>
+                                        </a>
+                                    </td>
+                                    <td class="cell-state"><span class="state-pill state-{{ c.state|lower }}">{{ c.state }}</span></td>
+                                    <td class="cell-status muted" title="{{ c.status }}">{{ c.status }}</td>
+                                    <td class="cell-image muted" title="{{ c.image }}">{{ c.image }}</td>
+                                    <td class="cell-num">{{ c.cpu_percent is not null ? c.cpu_percent|number_format(1, '.', ',') : '—' }}</td>
+                                    <td class="cell-num">
+                                        {% if c.memory_used_bytes is not null %}
+                                            {{ c.memory_used_bytes|format_bytes }}
+                                            {% if c.memory_limit_bytes %}
+                                                <span class="mem-limit">/ {{ c.memory_limit_bytes|format_bytes(0) }}</span>
+                                            {% endif %}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state large"><span>⌁</span><h2>No containers yet</h2><p>Waiting for the collector to write the first samples.</p></div>
+        {% endif %}
+    </section>
+
+    <div
+        hidden
+        data-metrics-charts="host"
+        data-metrics="{{ chart_metrics|join(',') }}"
+        data-canvas-prefix="host-chart"
+    >{{ host_series|json_encode|e('html') }}</div>
+</div>

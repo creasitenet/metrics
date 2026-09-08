@@ -1,0 +1,24 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Docker host — Metrics{% endblock %}
+
+{% block body %}
+<div class="page-head project-head">
+    <div>
+        <span class="eyebrow">DOCKER HOST</span>
+        <h1>Containers</h1>
+    </div>
+    <nav class="periods" aria-label="Period">
+        {% for key, label in {'1h':'1 hour','24h':'24 hours','7d':'7 days','30d':'30 days'} %}
+            <a class="{{ period == key ? 'active' : '' }}" href="{{ path('app_dashboard', {period: key}) }}">{{ label }}</a>
+        {% endfor %}
+    </nav>
+</div>
+
+{% include 'dashboard/_live.html.twig' %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('assets/vendor/chart.umd.min.js') }}"></script>
+<script src="{{ asset('assets/charts.js') }}"></script>
+{% endblock %}

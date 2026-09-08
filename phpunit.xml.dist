@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/11.5/phpunit.xsd"
+         bootstrap="tests/bootstrap.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache">
+  <php>
+    <server name="APP_ENV" value="test" force="true"/>
+    <server name="APP_DEBUG" value="1" force="true"/>
+    <server name="KERNEL_CLASS" value="App\Kernel"/>
+    <server name="DEFAULT_URI" value="http://localhost"/>
+    <!-- Disposable SQLite database for the test suite; the bootstrap creates it. -->
+    <env name="DATABASE_URL" value="sqlite:///%kernel.project_dir%/var/data/metrics_test.sqlite"/>
+    <env name="COLLECTOR_SCHEDULE_ENABLED" value="0"/>
+    <env name="COLLECTOR_INTERVAL" value="30"/>
+    <env name="DOCKER_SOCKET" value="/var/run/docker.sock"/>
+  </php>
+  <testsuites>
+    <testsuite name="Unit">
+      <directory>tests/Unit</directory>
+    </testsuite>
+    <testsuite name="Integration">
+      <directory>tests/Integration</directory>
+    </testsuite>
+    <testsuite name="Functional">
+      <directory>tests/Functional</directory>
+    </testsuite>
+  </testsuites>
+  <extensions>
+    <bootstrap class="Symfony\Bridge\PhpUnit\SymfonyExtension">
+      <parameter name="clock-mock-namespaces" value="App"/>
+      <parameter name="dns-mock-namespaces" value="App"/>
+    </bootstrap>
+  </extensions>
+</phpunit>

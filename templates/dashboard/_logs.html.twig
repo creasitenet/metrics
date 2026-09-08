@@ -1,0 +1,39 @@
+{# Log tail from DB; HTMX refreshes this whole block. #}
+<div
+    id="container-logs"
+    class="container-logs"
+    hx-get="{{ path('app_container_logs_live', {id: container_id}) }}"
+    hx-trigger="every {{ refresh_seconds }}s[!document.hidden]"
+    hx-swap="outerHTML"
+>
+    <section class="section-block logs-section">
+        <div class="section-head">
+            <span class="eyebrow">OUTPUT</span>
+            <h2>Logs</h2>
+        </div>
+
+        <div class="log-frame">
+            {% if logs %}
+                <ul class="log-list" data-log-panel>
+                    {% for log in logs %}
+                        {% set plain = log.line|strip_ansi %}
+                        {% set level = plain|log_level %}
+                        <li class="log-item" data-stream="{{ log.stream }}"{% if level %} data-level="{{ level }}"{% endif %}>
+                            {% if log.recordedAt %}
+                                <time datetime="{{ log.recordedAt|date('c') }}">{{ log.recordedAt|date('H:i:s') }}</time>
+                            {% else %}
+                                <time class="is-empty"></time>
+                            {% endif %}
+                            <i class="log-tag" aria-hidden="true"></i>
+                            <p class="log-msg">{{ plain }}</p>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <div class="log-list log-list-empty">
+                    <p>Waiting for log lines…</p>
+                </div>
+            {% endif %}
+        </div>
+    </section>
+</div>

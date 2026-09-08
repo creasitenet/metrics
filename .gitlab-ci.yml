@@ -1,0 +1,66 @@
+stages:
+  - test
+
+variables:
+  APP_ENV: test
+  APP_SECRET: ci-not-a-production-secret
+  # Disposable SQLite database: each job uses its own file under /tmp.
+  DATABASE_URL: "sqlite:////tmp/metrics-test.sqlite"
+  COLLECTOR_SCHEDULE_ENABLED: "0"
+  COLLECTOR_INTERVAL: "30"
+  DOCKER_SOCKET: "/var/run/docker.sock"
+  COMPOSER_ALLOW_SUPERUSER: '1'
+
+# Main job: SQLite only, without a PostgreSQL service.
+quality-and-tests-sqlite:
+  stage: test
+  image: php:8.5-cli
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git unzip libicu-dev libsqlite3-dev libzip-dev
+    - docker-php-ext-install intl zip pdo_sqlite
+    - php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    - php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+    - rm composer-setup.php
+    - composer install --no-interaction --prefer-dist --no-progress
+    - mkdir -p var/data
+    - rm -f /tmp/metrics-test.sqlite
+  script:
+    - composer validate --strict
+    - php bin/console lint:container
+    - php bin/console lint:twig templates
+    - vendor/bin/phpunit
+    # lint:container above warms var/cache/test for phpstan-symfony
+    - vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+    - vendor/bin/php-cs-fixer fix --dry-run --diff
+
+# Optional: same suite against PostgreSQL 16 (GitLab service container).
+quality-and-tests-postgres:
+  stage: test
+  image: php:8.5-cli
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    # Postgres creates `metrics_test`. With APP_ENV=test, Doctrine appends dbname_suffix `_test`
+    # to the URL path — use base name `metrics` so the effective database is `metrics_test`.
+    POSTGRES_DB: metrics_test
+    POSTGRES_USER: metrics
+    POSTGRES_PASSWORD: metrics
+    DATABASE_URL: "postgresql://metrics:metrics@postgres:5432/metrics?serverVersion=16&charset=utf8"
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git unzip libicu-dev libpq-dev libsqlite3-dev libzip-dev postgresql-client
+    - docker-php-ext-install intl zip pdo_sqlite pdo_pgsql
+    - php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    - php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+    - rm composer-setup.php
+    - composer install --no-interaction --prefer-dist --no-progress
+    - until pg_isready -h postgres -U metrics -d metrics_test; do sleep 1; done
+  script:
+    - php bin/console doctrine:migrations:migrate --no-interaction
+    - composer validate --strict
+    - php bin/console lint:container
+    - php bin/console lint:twig templates
+    - vendor/bin/phpunit
+    - vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+    - vendor/bin/php-cs-fixer fix --dry-run --diff
+  allow_failure: true

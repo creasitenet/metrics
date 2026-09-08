@@ -1,0 +1,129 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}{{ container.name }} — Metrics{% endblock %}
+
+{% block body %}
+{% set chart_metrics = ['docker.container.cpu_percent', 'docker.container.memory_used_bytes'] %}
+<a class="back-link" href="{{ path('app_dashboard', {period: period}) }}">← All containers</a>
+<div class="page-head project-head">
+    <div>
+        <span class="eyebrow">CONTAINER</span>
+        <h1>{{ container.name }}</h1>
+        <p>
+            <span class="state-pill state-{{ container.state|lower }}">{{ container.state }}</span>
+            · <code>{{ container.short_id }}</code>
+            · {{ container.image }}
+            {% if container.compose_service %}
+                · {{ container.compose_project }} / {{ container.compose_service }}
+            {% endif %}
+        </p>
+    </div>
+    <nav class="periods" aria-label="Period">
+        {% for key, label in {'1h':'1 hour','24h':'24 hours','7d':'7 days','30d':'30 days'} %}
+            <a class="{{ period == key ? 'active' : '' }}" href="{{ path('app_container_show', {id: container.short_id, period: key}) }}">{{ label }}</a>
+        {% endfor %}
+    </nav>
+</div>
+
+<div class="host-stats">
+    <div class="stat-tile stat-tile-primary">
+        <span class="metric-type">CPU</span>
+        <strong>{{ container.cpu_percent is not null ? container.cpu_percent|number_format(1, '.', ',') ~ '%' : '—' }}</strong>
+        <code>100% = 1 CPU</code>
+    </div>
+    <div class="stat-tile stat-tile-primary">
+        <span class="metric-type">MEMORY</span>
+        <strong>
+            {% if container.memory_used_bytes is not null %}
+                {{ container.memory_used_bytes|format_bytes }}
+            {% else %}
+                —
+            {% endif %}
+        </strong>
+        <code>memory_used_bytes</code>
+    </div>
+    <div class="stat-tile">
+        <span class="metric-type">LIMIT</span>
+        <strong>
+            {% if container.memory_limit_bytes is not null %}
+                {{ container.memory_limit_bytes|format_bytes(0) }}
+            {% elseif metrics['docker.container.memory_limit_bytes'] is defined %}
+                {{ metrics['docker.container.memory_limit_bytes'].latest|format_bytes(0) }}
+            {% else %}
+                —
+            {% endif %}
+        </strong>
+        <code>memory_limit_bytes</code>
+    </div>
+    <div class="stat-tile">
+        <span class="metric-type">STATUS</span>
+        <strong>{{ container.status|default(container.state) }}</strong>
+        <code>docker state</code>
+    </div>
+</div>
+
+{% set has_charts = metrics['docker.container.cpu_percent'] is defined or metrics['docker.container.memory_used_bytes'] is defined %}
+
+{% if has_charts %}
+<div class="metric-grid">
+{% for name in chart_metrics %}
+    {% if metrics[name] is defined %}
+    {% set data = metrics[name] %}
+    <article class="metric-card">
+        <header>
+            <div><span class="metric-type">GAUGE</span><h2>{{ name }}</h2></div>
+            <div class="latest">
+                <b>
+                    {% if name ends with '_bytes' %}
+                        {{ data.latest|format_bytes }}
+                    {% else %}
+                        {{ data.latest|number_format(1, '.', ',') }}%
+                    {% endif %}
+                </b>
+                <span>LATEST</span>
+            </div>
+        </header>
+        <div class="chart-wrap">
+            <canvas id="metric-chart-{{ name|replace({'.': '-'}) }}" aria-label="{{ name }}"></canvas>
+        </div>
+    </article>
+    {% endif %}
+{% endfor %}
+</div>
+<div
+    hidden
+    data-metrics-charts="container"
+    data-metrics="{{ chart_metrics|join(',') }}"
+    data-canvas-prefix="metric-chart"
+>{{ metrics|json_encode|e('html') }}</div>
+{% else %}
+<div class="empty-state large">
+    <span>⌁</span>
+    <h2>No history yet</h2>
+    <p>Waiting for the collector to write the first samples.</p>
+</div>
+{% endif %}
+
+{% include 'dashboard/_logs.html.twig' with {
+    container_id: container.short_id,
+    logs: logs,
+    refresh_seconds: refresh_seconds,
+    log_tail: log_tail
+} only %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('assets/vendor/chart.umd.min.js') }}"></script>
+<script src="{{ asset('assets/charts.js') }}"></script>
+<script>
+(() => {
+  const stick = () => {
+    document.querySelectorAll('[data-log-panel]').forEach((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+  };
+  document.addEventListener('DOMContentLoaded', stick);
+  document.body.addEventListener('htmx:afterSettle', stick);
+})();
+</script>
+{% endblock %}

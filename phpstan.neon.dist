@@ -1,0 +1,13 @@
+includes:
+    - vendor/phpstan/phpstan-doctrine/extension.neon
+    - vendor/phpstan/phpstan-symfony/extension.neon
+
+parameters:
+    level: 6
+    paths:
+        - src
+        - tests
+    tmpDir: var/phpstan
+    symfony:
+        # Matches APP_ENV=test (CI + phpunit). Warm with: php bin/console lint:container
+        containerXmlPath: var/cache/test/App_KernelTestDebugContainer.xml

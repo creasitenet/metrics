@@ -1,0 +1,25 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Sign in — Metrics{% endblock %}
+
+{% block body %}
+<section class="login-wrap">
+    <div class="login-intro">
+        <span class="eyebrow">SELF-HOSTED OBSERVABILITY</span>
+        <h1>See what<br>your systems<br><em>really say.</em></h1>
+        <p>A focused console for collecting and reviewing the technical signals that matter.</p>
+    </div>
+    <form method="post" class="panel login-panel">
+        <div class="panel-kicker">SECURE ACCESS</div>
+        <h2>Sign in</h2>
+        {% if error %}<div class="form-alert">{{ error.messageKey|trans(error.messageData, 'security') }}</div>{% endif %}
+        <label for="username">Email address</label>
+        <input type="email" value="{{ last_username }}" name="_username" id="username" autocomplete="email" required autofocus>
+        <label for="password">Password</label>
+        <input type="password" name="_password" id="password" autocomplete="current-password" required>
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token('authenticate') }}">
+        <button class="button button-wide" type="submit">Open the console <span>→</span></button>
+        <p class="form-note">Accounts are created by an administrator from the command line.</p>
+    </form>
+</section>
+{% endblock %}

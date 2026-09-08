@@ -1,0 +1,84 @@
+name: metrics
+
+# Docker host monitor. The collector reads docker.sock and writes metrics;
+# the app only serves the dashboard from the database (SQLite by default).
+# For PostgreSQL/MySQL, set DATABASE_URL to an external instance — no DB service ships here.
+#
+# Deployment: see README — Case 1 (standalone + METRICS_PORT) or Case 2 (reverse proxy).
+services:
+  metrics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: metrics/app:latest
+    container_name: metrics
+    restart: unless-stopped
+    env_file:
+      - path: ${ENV_FILE:-.env.dist}
+        required: true
+    environment:
+      APP_ENV: ${APP_ENV:-prod}
+      APP_DEBUG: ${APP_DEBUG:-0}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-1}
+      DATA_DIR: /var/www/html/var/data
+      HOST_UID: ${HOST_UID:-}
+      HOST_GID: ${HOST_GID:-}
+      DEFAULT_URI: ${DEFAULT_URI:-http://localhost:${METRICS_PORT:-8080}}
+      COLLECTOR_SCHEDULE_ENABLED: ${COLLECTOR_SCHEDULE_ENABLED:-1}
+      COLLECTOR_INTERVAL: ${COLLECTOR_INTERVAL:-30}
+      DOCKER_SOCKET: ${DOCKER_SOCKET:-/var/run/docker.sock}
+    # Case 1 (standalone): publish on the host. Change METRICS_PORT in `.env` if 8080 is taken.
+    # Case 2 (reverse proxy): comment out `ports`, uncomment `proxy-tier` under networks
+    # (service + bottom of file), then point your VHost to http://metrics:80.
+    ports:
+      - "${METRICS_PORT:-8080}:80"
+    volumes:
+      - ${SQLITE_DATA_DIR:-./var/data}:/var/www/html/var/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - metrics-net
+      # - proxy-tier
+
+  # Consumes Symfony Scheduler until FrankenPHP worker mode runs it in-process.
+  collector:
+    image: metrics/app:latest
+    container_name: metrics-collector
+    restart: unless-stopped
+    depends_on:
+      metrics:
+        condition: service_started
+    env_file:
+      - path: ${ENV_FILE:-.env.dist}
+        required: true
+    environment:
+      APP_ENV: ${APP_ENV:-prod}
+      APP_DEBUG: ${APP_DEBUG:-0}
+      RUN_MIGRATIONS: "0"
+      COLLECTOR_SCHEDULE_ENABLED: ${COLLECTOR_SCHEDULE_ENABLED:-1}
+      COLLECTOR_INTERVAL: ${COLLECTOR_INTERVAL:-30}
+      DOCKER_SOCKET: ${DOCKER_SOCKET:-/var/run/docker.sock}
+      DATA_DIR: /var/www/html/var/data
+    volumes:
+      - ${SQLITE_DATA_DIR:-./var/data}:/var/www/html/var/data
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:${DOCKER_SOCKET:-/var/run/docker.sock}:ro
+    entrypoint: ["tini", "--"]
+    user: "0:0"
+    command: ["php", "/var/www/html/bin/console", "messenger:consume", "scheduler_default", "-vv", "--time-limit=3600"]
+    # Same image as `metrics`; Compose bakes the HTTP healthcheck into the image.
+    # The collector runs messenger:consume only — no web server on :80.
+    healthcheck:
+      disable: true
+    networks:
+      - metrics-net
+
+networks:
+  metrics-net:
+    driver: bridge
+  # Case 2: uncomment so the reverse proxy can reach service hostname `metrics`.
+  # proxy-tier:
+  #   external: true
