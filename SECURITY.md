@@ -13,7 +13,7 @@ Metrics is a self-hosted Docker host monitor. This document covers deployment ri
 
 **Do not open a public GitHub issue for security problems.**
 
-Please report privately by email to the maintainers (use the contact address listed on the GitHub repository or in `composer.json` once published).
+Please report privately via [GitHub Security Advisories](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) for this repository, or by email to the maintainer address listed on the GitHub repo.
 
 Include:
 
@@ -40,17 +40,18 @@ The **collector** service mounts `docker.sock` (read-only in Compose, but still 
 
 The dashboard shows container metrics and log tails from your host.
 
+Metrics has **no built-in authentication** and no user accounts. Access control is delegated to your reverse proxy (Caddy, Traefik, nginx, Nginx Proxy Manager, oauth2-proxy…).
+
 - **Always set a strong `APP_SECRET`** in production (see `.env.dist`).
-- Create accounts with `app:user:create`; there is no public registration.
-- Use strong passwords (minimum 12 characters enforced by the CLI).
 - Put Metrics **behind HTTPS** (reverse proxy: Caddy, Traefik, nginx, etc.) when accessed outside localhost.
+- Enforce authentication at the proxy level (Basic auth, OAuth2 proxy, VPN, IP allowlist).
 - Restrict network access (VPN, firewall, internal DNS) if the instance is not purely local.
+- Do not publish the dashboard port directly on the Internet.
+- Compose binds the published port to `127.0.0.1` by default (`METRICS_BIND`). Setting `METRICS_BIND=0.0.0.0` exposes the dashboard on every interface of the host — only do it behind an authenticating proxy.
 
 ### Database
 
 SQLite data lives in `./var/data` by default. Protect that directory on the host (filesystem permissions, backups, encryption at rest if required by your policy).
-
-If you use PostgreSQL or MySQL, follow your database provider's hardening guidance and use least-privilege credentials.
 
 ### Container privileges
 
@@ -60,8 +61,8 @@ The collector may run as `root` inside the container to read `docker.sock` on so
 
 These are product choices, not bugs:
 
-- No built-in multi-user RBAC (all logged-in users see the same dashboard).
-- No rate limiting on the login form (mitigate with network controls or a reverse proxy).
+- No built-in authentication: access control is the reverse proxy's responsibility.
+- No rate limiting on the dashboard (mitigate with network controls or a reverse proxy).
 - Metrics reflects what the Docker Engine API exposes; it is not a full SIEM or intrusion detection system.
 
 ## Security updates

@@ -9,25 +9,17 @@ use Doctrine\DBAL\Types\Types;
 use Doctrine\Migrations\AbstractMigration;
 
 /**
- * Portable baseline schema (SQLite / PostgreSQL / MySQL via Doctrine Schema API).
+ * Baseline schema (SQLite).
  */
 final class Version20260806164538 extends AbstractMigration
 {
     public function getDescription(): string
     {
-        return 'Create app_user, metric, data_point, data_state with indexed container_id.';
+        return 'Create metric, data_point, data_state with indexed container_id.';
     }
 
     public function up(Schema $schema): void
     {
-        $user = $schema->createTable('app_user');
-        $user->addColumn('id', Types::INTEGER, ['autoincrement' => true]);
-        $user->addColumn('email', Types::STRING, ['length' => 180]);
-        $user->addColumn('roles', Types::JSON);
-        $user->addColumn('password', Types::STRING, ['length' => 255]);
-        $user->setPrimaryKey(['id']);
-        $user->addUniqueIndex(['email'], 'UNIQ_88BDF3E9E7927C74');
-
         $metric = $schema->createTable('metric');
         $metric->addColumn('id', Types::INTEGER, ['autoincrement' => true]);
         $metric->addColumn('name', Types::STRING, ['length' => 128]);
@@ -69,6 +61,5 @@ final class Version20260806164538 extends AbstractMigration
         $schema->dropTable('data_point');
         $schema->dropTable('data_state');
         $schema->dropTable('metric');
-        $schema->dropTable('app_user');
     }
 }

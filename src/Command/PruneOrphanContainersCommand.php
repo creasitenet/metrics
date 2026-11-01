@@ -12,7 +12,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 #[AsCommand(
     name: 'app:orphan-containers:prune',
-    description: 'Remove DataState / DataPoint / ContainerLog rows for containers no longer known to Docker.',
+    description: 'Remove container, sample and log rows for containers no longer known to Docker.',
 )]
 final class PruneOrphanContainersCommand extends Command
 {
@@ -33,10 +33,10 @@ final class PruneOrphanContainersCommand extends Command
         }
 
         $output->writeln(\sprintf(
-            '<info>Orphan prune done (kept %d live id(s)): %d state(s), %d point(s), %d log row(s) removed.</info>',
+            '<info>Orphan prune done (kept %d live id(s)): %d container(s), %d sample(s), %d log row(s) removed.</info>',
             $result['kept'],
-            $result['states'],
-            $result['points'],
+            $result['containers'],
+            $result['samples'],
             $result['logs'],
         ));
 

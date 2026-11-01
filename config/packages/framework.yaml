@@ -1,17 +1,10 @@
 framework:
     secret: '%env(APP_SECRET)%'
-    csrf_protection: true
     handle_all_throwables: true
     http_method_override: false
-    session:
-        cookie_secure: auto
-        cookie_samesite: lax
-        handler_id: null
     router:
         default_uri: '%env(DEFAULT_URI)%'
 
 when@test:
     framework:
         test: true
-        session:
-            storage_factory_id: session.storage.factory.mock_file

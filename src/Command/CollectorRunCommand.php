@@ -20,8 +20,8 @@ final class CollectorRunCommand extends Command
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $points = $this->collector->collect();
-        $output->writeln(\sprintf('<info>Collected %d point(s).</info>', $points));
+        $samples = $this->collector->collect();
+        $output->writeln(\sprintf('<info>Collected %d sample(s).</info>', $samples));
 
         return Command::SUCCESS;
     }

@@ -4,44 +4,56 @@ declare(strict_types=1);
 
 namespace App\Collector\Docker;
 
-use App\Dto\MetricPoint;
-use App\Enum\MetricType;
+use App\Dto\ContainerSample;
+use App\Dto\ContainerSnapshot;
+use App\Dto\DockerCollection;
+use App\Dto\HostSample;
 
 final class DockerMetricsMapper
 {
+    private const COMPOSE_LABELS = [
+        'com.docker.compose.project' => 'composeProject',
+        'com.docker.compose.service' => 'composeService',
+        'com.docker.compose.project.working_dir' => 'composeWorkingDir',
+        'com.docker.compose.project.config_files' => 'composeConfigFiles',
+        'dev.dozzle.group' => 'group',
+    ];
+
     /**
      * @param array<string, mixed>                $info
      * @param list<array<string, mixed>>          $containers
      * @param array<string, array<string, mixed>> $statsById
-     *
-     * @return list<MetricPoint>
      */
-    public function map(array $info, array $containers, array $statsById, \DateTimeImmutable $now): array
+    public function map(array $info, array $containers, array $statsById, \DateTimeImmutable $now): DockerCollection
     {
-        $points = [];
         $total = (int) ($info['Containers'] ?? \count($containers));
         $running = (int) ($info['ContainersRunning'] ?? 0);
         $paused = (int) ($info['ContainersPaused'] ?? 0);
         $stopped = (int) ($info['ContainersStopped'] ?? max(0, $total - $running - $paused));
-        $hostNcpu = (float) ($info['NCPU'] ?? 0);
-        $hostMemoryTotal = (float) ($info['MemTotal'] ?? 0);
-        $hostMemoryUsed = 0.0;
+        $hostNcpu = (int) ($info['NCPU'] ?? 0);
+        $hostMemoryTotal = (int) ($info['MemTotal'] ?? 0);
+        $hostMemoryUsed = 0;
         $hostCpuSum = 0.0;
         $hostCpuSamples = 0;
 
+        $snapshots = [];
+        $samples = [];
+
         foreach ($containers as $container) {
             $id = (string) ($container['Id'] ?? '');
-            if ('' === $id || !isset($statsById[$id])) {
+            if ('' === $id) {
                 continue;
             }
 
-            $tags = $this->containerTags($container);
-            $isRunning = 'running' === ($container['State'] ?? '');
+            $snapshots[$id] = $this->containerSnapshot($container);
 
+            if (!isset($statsById[$id])) {
+                continue;
+            }
+
+            $isRunning = 'running' === ($container['State'] ?? '');
             if (!$isRunning) {
-                $points[] = new MetricPoint('docker.container.running', MetricType::STATE, 0.0, $now, $tags);
-                $points[] = new MetricPoint('docker.container.cpu_percent', MetricType::GAUGE, 0.0, $now, $tags);
-                $points[] = new MetricPoint('docker.container.memory_used_bytes', MetricType::GAUGE, 0.0, $now, $tags);
+                $samples[$id] = new ContainerSample($id, $now, false);
                 continue;
             }
 
@@ -50,72 +62,62 @@ final class DockerMetricsMapper
             $memoryUsed = $this->memoryUsedBytes($stats);
             $memoryLimit = $this->memoryLimitBytes($stats, $hostMemoryTotal);
 
-            $points[] = new MetricPoint('docker.container.running', MetricType::STATE, 1.0, $now, $tags);
-            $points[] = new MetricPoint('docker.container.memory_limit_bytes', MetricType::STATE, $memoryLimit, $now, $tags);
-            $points[] = new MetricPoint('docker.container.memory_used_bytes', MetricType::GAUGE, $memoryUsed, $now, $tags);
-
             $hostMemoryUsed += $memoryUsed;
             if (null !== $cpu) {
                 $hostCpuSum += $cpu;
                 ++$hostCpuSamples;
-                $points[] = new MetricPoint('docker.container.cpu_percent', MetricType::GAUGE, $cpu, $now, $tags);
             }
+
+            $samples[$id] = new ContainerSample($id, $now, true, $cpu, $memoryUsed, $memoryLimit);
         }
 
-        $points[] = new MetricPoint('docker.containers.total', MetricType::STATE, (float) $total, $now);
-        $points[] = new MetricPoint('docker.containers.running', MetricType::STATE, (float) $running, $now);
-        $points[] = new MetricPoint('docker.containers.stopped', MetricType::STATE, (float) $stopped, $now);
-        $points[] = new MetricPoint('docker.host.memory_total_bytes', MetricType::STATE, $hostMemoryTotal, $now);
-        $points[] = new MetricPoint('docker.host.memory_used_bytes', MetricType::GAUGE, $hostMemoryUsed, $now);
+        $host = new HostSample(
+            $now,
+            $hostCpuSamples > 0 ? $hostCpuSum : 0.0,
+            $hostMemoryUsed,
+            $hostMemoryTotal > 0 ? $hostMemoryTotal : null,
+            $hostNcpu > 0 ? $hostNcpu : null,
+            $total,
+            $running,
+            $stopped,
+            isset($info['Images']) ? (int) $info['Images'] : null,
+            isset($info['NGoroutines']) ? (int) $info['NGoroutines'] : null,
+            isset($info['NFd']) ? (int) $info['NFd'] : null,
+        );
 
-        if ($hostNcpu > 0) {
-            $points[] = new MetricPoint('docker.host.cpu_count', MetricType::STATE, $hostNcpu, $now);
-        }
-        if (isset($info['Images'])) {
-            $points[] = new MetricPoint('docker.host.images_total', MetricType::STATE, (float) $info['Images'], $now);
-        }
-        if (isset($info['NGoroutines'])) {
-            $points[] = new MetricPoint('docker.host.goroutines', MetricType::GAUGE, (float) $info['NGoroutines'], $now);
-        }
-        if (isset($info['NFd'])) {
-            $points[] = new MetricPoint('docker.host.fds_open', MetricType::GAUGE, (float) $info['NFd'], $now);
-        }
-        // Sum of per-container % (same scale as `docker stats`: 100% = one full CPU).
-        if ($hostCpuSamples > 0) {
-            $points[] = new MetricPoint('docker.host.cpu_percent', MetricType::GAUGE, $hostCpuSum, $now);
-        }
-
-        return $points;
+        return new DockerCollection($snapshots, $samples, $host);
     }
 
     /**
      * @param array<string, mixed> $container
-     *
-     * @return array<string, scalar|null>
      */
-    private function containerTags(array $container): array
+    private function containerSnapshot(array $container): ContainerSnapshot
     {
         $id = (string) ($container['Id'] ?? '');
         $names = $container['Names'] ?? [];
         $name = (\is_array($names) && isset($names[0])) ? ltrim((string) $names[0], '/') : 'unknown';
         $labels = \is_array($container['Labels'] ?? null) ? $container['Labels'] : [];
 
-        $tags = [
-            'container_id' => '' !== $id ? $id : substr($id, 0, 12),
-            'container_name' => $name,
-            'image' => mb_substr((string) ($container['Image'] ?? ''), 0, 255),
-            'state' => (string) ($container['State'] ?? 'unknown'),
-            'status' => (string) ($container['Status'] ?? 'unknown'),
-        ];
-
-        foreach (['compose_project' => 'com.docker.compose.project', 'compose_service' => 'com.docker.compose.service'] as $tag => $label) {
+        $compose = [];
+        foreach (self::COMPOSE_LABELS as $label => $property) {
             $value = $labels[$label] ?? null;
             if (\is_string($value) && '' !== $value) {
-                $tags[$tag] = mb_substr($value, 0, 255);
+                $compose[$property] = mb_substr($value, 0, 512);
             }
         }
 
-        return $tags;
+        return new ContainerSnapshot(
+            $id,
+            $name,
+            mb_substr((string) ($container['Image'] ?? ''), 0, 255),
+            (string) ($container['State'] ?? 'unknown'),
+            (string) ($container['Status'] ?? 'unknown'),
+            $compose['composeProject'] ?? null,
+            $compose['composeService'] ?? null,
+            $compose['composeWorkingDir'] ?? null,
+            $compose['composeConfigFiles'] ?? null,
+            $compose['group'] ?? null,
+        );
     }
 
     /** @param array<string, mixed> $stats */
@@ -149,16 +151,16 @@ final class DockerMetricsMapper
     }
 
     /** @param array<string, mixed> $stats */
-    private function memoryUsedBytes(array $stats): float
+    private function memoryUsedBytes(array $stats): int
     {
         $memory = $stats['memory_stats'] ?? null;
         if (!\is_array($memory)) {
-            return 0.0;
+            return 0;
         }
 
         $usage = (float) ($memory['usage'] ?? 0);
         if ($usage <= 0.0) {
-            return 0.0;
+            return 0;
         }
 
         // Match docker stats / moby calculateMemUsageUnixNoCache:
@@ -172,25 +174,25 @@ final class DockerMetricsMapper
                 }
                 $reclaimable = (float) $inner[$key];
                 if ($reclaimable > 0.0 && $reclaimable < $usage) {
-                    return $usage - $reclaimable;
+                    return (int) ($usage - $reclaimable);
                 }
             }
         }
 
-        return $usage;
+        return (int) $usage;
     }
 
     /** @param array<string, mixed> $stats */
-    private function memoryLimitBytes(array $stats, float $hostMemoryTotal): float
+    private function memoryLimitBytes(array $stats, int $hostMemoryTotal): int
     {
         $memory = $stats['memory_stats'] ?? null;
         if (!\is_array($memory)) {
             return $hostMemoryTotal;
         }
 
-        $limit = (float) ($memory['limit'] ?? 0);
-        if ($limit <= 0.0 || ($hostMemoryTotal > 0.0 && $limit > $hostMemoryTotal)) {
-            return $hostMemoryTotal > 0.0 ? $hostMemoryTotal : $limit;
+        $limit = (int) ($memory['limit'] ?? 0);
+        if ($limit <= 0 || ($hostMemoryTotal > 0 && $limit > $hostMemoryTotal)) {
+            return $hostMemoryTotal > 0 ? $hostMemoryTotal : $limit;
         }
 
         return $limit;

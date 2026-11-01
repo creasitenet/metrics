@@ -4,60 +4,89 @@ declare(strict_types=1);
 
 namespace App\Metrics;
 
-use App\Dto\MetricPoint;
-use App\Entity\DataPoint;
-use App\Entity\DataState;
-use App\Entity\Metric;
-use App\Repository\DataStateRepository;
-use App\Repository\MetricRepository;
+use App\Dto\DockerCollection;
+use App\Entity\Container;
+use App\Entity\ContainerSample;
+use App\Entity\HostSample;
+use App\Repository\ContainerRepository;
 use Doctrine\ORM\EntityManagerInterface;
 
 final class MetricsWriter
 {
     public function __construct(
         private EntityManagerInterface $entityManager,
-        private MetricRepository $metricRepository,
-        private DataStateRepository $dataStateRepository,
+        private ContainerRepository $containerRepository,
     ) {
     }
 
-    /** @param list<MetricPoint> $points */
-    public function write(array $points): int
+    public function write(DockerCollection $collection): int
     {
-        if ([] === $points) {
-            return 0;
-        }
-
-        return $this->entityManager->wrapInTransaction(function () use ($points): int {
-            $metrics = $this->metricRepository->indexedByName();
-            /** @var array<string, DataState> $statesByKey */
-            $statesByKey = [];
+        return $this->entityManager->wrapInTransaction(function () use ($collection): int {
+            $containers = $this->containerRepository->indexedById();
             $written = 0;
 
-            foreach ($points as $point) {
-                $metric = $metrics[$point->metric] ?? null;
-                if (null === $metric) {
-                    $metric = new Metric($point->metric, $point->type);
-                    $metrics[$point->metric] = $metric;
-                    $this->entityManager->persist($metric);
-                }
-
-                $containerId = isset($point->tags['container_id']) && \is_string($point->tags['container_id']) && '' !== $point->tags['container_id']
-                    ? $point->tags['container_id']
-                    : null;
-
-                if ($point->type->isHistorical()) {
-                    $this->entityManager->persist(new DataPoint(
-                        $metric,
-                        $point->value,
-                        $point->tags,
-                        $point->timestamp,
-                        $containerId,
-                    ));
+            foreach ($collection->containers as $id => $snapshot) {
+                $container = $containers[$id] ?? null;
+                if (null === $container) {
+                    $container = new Container(
+                        $id,
+                        $snapshot->name,
+                        $snapshot->image,
+                        $snapshot->state,
+                        $snapshot->status,
+                        $snapshot->composeProject,
+                        $snapshot->composeService,
+                        $snapshot->composeWorkingDir,
+                        $snapshot->composeConfigFiles,
+                        $snapshot->group,
+                    );
+                    $containers[$id] = $container;
+                    $this->entityManager->persist($container);
                 } else {
-                    $this->upsertDataState($metric, $point, $containerId, $statesByKey);
+                    $container
+                        ->setName($snapshot->name)
+                        ->setImage($snapshot->image)
+                        ->setState($snapshot->state)
+                        ->setStatus($snapshot->status)
+                        ->setComposeProject($snapshot->composeProject)
+                        ->setComposeService($snapshot->composeService)
+                        ->setComposeWorkingDir($snapshot->composeWorkingDir)
+                        ->setComposeConfigFiles($snapshot->composeConfigFiles)
+                        ->setGroup($snapshot->group)
+                        ->setUpdatedAt(new \DateTimeImmutable());
                 }
 
+                $sample = $collection->sampleFor($id);
+                if (null === $sample) {
+                    continue;
+                }
+
+                $this->entityManager->persist(new ContainerSample(
+                    $sample->containerId,
+                    $sample->recordedAt,
+                    $sample->running,
+                    $sample->cpuPercent,
+                    $sample->memoryUsedBytes,
+                    $sample->memoryLimitBytes,
+                ));
+                ++$written;
+            }
+
+            $host = $collection->host;
+            if (null !== $host) {
+                $this->entityManager->persist(new HostSample(
+                    $host->recordedAt,
+                    $host->cpuPercent,
+                    $host->memoryUsedBytes,
+                    $host->memoryTotalBytes,
+                    $host->cpuCount,
+                    $host->containersTotal,
+                    $host->containersRunning,
+                    $host->containersStopped,
+                    $host->imagesTotal,
+                    $host->goroutines,
+                    $host->fdsOpen,
+                ));
                 ++$written;
             }
 
@@ -65,30 +94,5 @@ final class MetricsWriter
 
             return $written;
         });
-    }
-
-    /** @param array<string, DataState> $statesByKey */
-    private function upsertDataState(Metric $metric, MetricPoint $point, ?string $containerId, array &$statesByKey): void
-    {
-        $cacheKey = $point->metric."\0".($containerId ?? '');
-        $dataState = $statesByKey[$cacheKey] ?? null;
-
-        if (null === $dataState && null !== $metric->getId()) {
-            $dataState = $this->dataStateRepository->findOneByMetricAndContainer($metric, $containerId);
-        }
-
-        if (null === $dataState) {
-            $dataState = new DataState($metric, $point->value, $point->tags, $point->timestamp, $containerId);
-            $this->entityManager->persist($dataState);
-            $statesByKey[$cacheKey] = $dataState;
-
-            return;
-        }
-
-        $dataState->setValue($point->value);
-        $dataState->setUpdatedAt($point->timestamp);
-        $dataState->setTags($point->tags);
-        $dataState->setContainerId($containerId);
-        $statesByKey[$cacheKey] = $dataState;
     }
 }

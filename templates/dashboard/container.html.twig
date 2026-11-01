@@ -16,6 +16,9 @@
             {% if container.compose_service %}
                 · {{ container.compose_project }} / {{ container.compose_service }}
             {% endif %}
+            {% if container.compose_working_dir %}
+                · <code>{{ container.compose_working_dir }}</code>
+            {% endif %}
         </p>
     </div>
     <nav class="periods" aria-label="Period">
@@ -47,8 +50,6 @@
         <strong>
             {% if container.memory_limit_bytes is not null %}
                 {{ container.memory_limit_bytes|format_bytes(0) }}
-            {% elseif metrics['docker.container.memory_limit_bytes'] is defined %}
-                {{ metrics['docker.container.memory_limit_bytes'].latest|format_bytes(0) }}
             {% else %}
                 —
             {% endif %}

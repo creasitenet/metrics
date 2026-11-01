@@ -4,141 +4,129 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Entity\Container;
+use App\Entity\ContainerSample;
+use App\Entity\HostSample;
+
 final class SeriesBuilder
 {
-    private const CONTAINER_PREFIX = 'docker.container.';
+    public const HOST_CPU_PERCENT = 'docker.host.cpu_percent';
+    public const HOST_MEMORY_USED = 'docker.host.memory_used_bytes';
+    public const HOST_MEMORY_TOTAL = 'docker.host.memory_total_bytes';
+    public const HOST_CPU_COUNT = 'docker.host.cpu_count';
+    public const HOST_IMAGES_TOTAL = 'docker.host.images_total';
+    public const HOST_GOROUTINES = 'docker.host.goroutines';
+    public const HOST_FDS_OPEN = 'docker.host.fds_open';
+    public const CONTAINERS_TOTAL = 'docker.containers.total';
+    public const CONTAINERS_RUNNING = 'docker.containers.running';
+    public const CONTAINERS_STOPPED = 'docker.containers.stopped';
+    public const CONTAINER_CPU_PERCENT = 'docker.container.cpu_percent';
+    public const CONTAINER_MEMORY_USED = 'docker.container.memory_used_bytes';
+    public const CONTAINER_MEMORY_LIMIT = 'docker.container.memory_limit_bytes';
+    public const CONTAINER_RUNNING = 'docker.container.running';
 
     /**
-     * @param list<array<string, mixed>> $states
-     * @param list<array<string, mixed>> $points
+     * @param list<Container>                $containers
+     * @param array<string, ContainerSample> $latestSamples keyed by container id
+     * @param list<HostSample>               $hostHistory
      *
-     * @return array{host: array<string, mixed>, containers: array<string, mixed>}
+     * @return array{host: array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}>, containers: array<string, array<string, mixed>>}
      */
-    public function buildDashboard(array $states, array $points): array
+    public function buildDashboard(array $containers, array $latestSamples, array $hostHistory): array
     {
-        $host = [];
-        $containers = [];
+        $host = $this->hostSeries($hostHistory);
+        $rows = [];
 
-        foreach ($states as $state) {
-            $name = (string) ($state['metric']['name'] ?? '');
-            $tags = \is_array($state['tags'] ?? null) ? $state['tags'] : [];
-            $value = (float) ($state['value'] ?? 0);
-
-            if ($this->isHostMetric($name)) {
-                $host[$name] = [
-                    'labels' => $host[$name]['labels'] ?? [],
-                    'values' => $host[$name]['values'] ?? [],
-                    'latest' => $value,
-                    'count' => $host[$name]['count'] ?? 0,
-                ];
-                continue;
-            }
-
-            if (!str_starts_with($name, self::CONTAINER_PREFIX)) {
-                continue;
-            }
-
-            $key = $this->containerKey($tags);
-            $containers[$key] = $this->mergeContainer($tags, $containers[$key] ?? null);
-            $containers[$key]['metrics'][$name] ??= ['labels' => [], 'values' => [], 'latest' => $value, 'count' => 0];
-            $containers[$key]['metrics'][$name]['latest'] = $value;
-        }
-
-        foreach ($points as $point) {
-            $name = (string) ($point['metric']['name'] ?? '');
-            $tags = \is_array($point['tags'] ?? null) ? $point['tags'] : [];
-            $recordedAt = $point['recordedAt'] ?? null;
-            $entry = [
-                'label' => $recordedAt instanceof \DateTimeImmutable ? $recordedAt->format(\DATE_ATOM) : '',
-                'value' => (float) ($point['value'] ?? 0),
+        foreach ($containers as $container) {
+            $id = $container->getId();
+            $sample = $latestSamples[$id] ?? null;
+            $rows[$id] = [
+                'id' => $id,
+                'name' => $container->getName(),
+                'image' => $container->getImage(),
+                'state' => $container->getState(),
+                'status' => $container->getStatus(),
+                'compose_project' => $container->getComposeProject(),
+                'compose_service' => $container->getComposeService(),
+                'compose_working_dir' => $container->getComposeWorkingDir(),
+                'compose_config_files' => $container->getComposeConfigFiles(),
+                'group' => $container->getGroup(),
+                'running' => $sample?->isRunning() ?? false,
+                'cpu_percent' => $sample?->getCpuPercent(),
+                'memory_used_bytes' => $sample?->getMemoryUsedBytes(),
+                'memory_limit_bytes' => $sample?->getMemoryLimitBytes(),
+                'metrics' => [],
             ];
-
-            if (str_starts_with($name, self::CONTAINER_PREFIX)) {
-                $key = $this->containerKey($tags);
-                $containers[$key] = $this->mergeContainer($tags, $containers[$key] ?? null);
-                $this->append($containers[$key]['metrics'], $name, $entry);
-                continue;
-            }
-
-            if ($this->isHostMetric($name)) {
-                $this->append($host, $name, $entry);
-            }
         }
 
-        ksort($containers);
+        ksort($rows);
 
-        return ['host' => $host, 'containers' => $containers];
-    }
-
-    private function isHostMetric(string $name): bool
-    {
-        return str_starts_with($name, 'docker.host.') || str_starts_with($name, 'docker.containers.');
-    }
-
-    /** @param array<string, scalar|null> $tags */
-    private function containerKey(array $tags): string
-    {
-        $name = $this->tag($tags, 'container_name');
-        if ('' !== $name) {
-            return $name;
-        }
-
-        $id = $this->tag($tags, 'container_id');
-
-        return '' !== $id ? $id : 'unknown';
+        return ['host' => $host, 'containers' => $rows];
     }
 
     /**
-     * @param array<string, scalar|null> $tags
-     * @param array<string, mixed>|null  $existing
+     * Per-container series, used by the container detail page.
      *
-     * @return array<string, mixed>
+     * @param list<ContainerSample> $samples
+     *
+     * @return array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}>
      */
-    private function mergeContainer(array $tags, ?array $existing): array
+    public function buildContainerSeries(array $samples): array
     {
-        $row = $existing ?? [
-            'name' => '',
-            'image' => '',
-            'container_id' => '',
-            'compose_project' => '',
-            'compose_service' => '',
-            'state' => '',
-            'status' => '',
-            'health' => '',
-            'ports' => '',
-            'metrics' => [],
-        ];
+        $series = [];
 
-        $name = $this->tag($tags, 'container_name');
-        $row['name'] = '' !== $name ? $name : ('' !== $row['name'] ? $row['name'] : $this->containerKey($tags));
-        foreach (['image', 'container_id', 'compose_project', 'compose_service', 'state', 'status', 'health', 'ports'] as $field) {
-            $value = $this->tag($tags, $field);
-            if ('' !== $value) {
-                $row[$field] = $value;
-            }
+        foreach ($samples as $sample) {
+            $label = $sample->getRecordedAt()->format(\DATE_ATOM);
+
+            $this->append($series, self::CONTAINER_CPU_PERCENT, $label, $sample->getCpuPercent());
+            $this->append($series, self::CONTAINER_MEMORY_USED, $label, $sample->getMemoryUsedBytes());
+            $this->append($series, self::CONTAINER_MEMORY_LIMIT, $label, $sample->getMemoryLimitBytes());
+            $this->append($series, self::CONTAINER_RUNNING, $label, $sample->isRunning() ? 1.0 : 0.0);
         }
 
-        return $row;
-    }
-
-    /** @param array<string, scalar|null> $tags */
-    private function tag(array $tags, string $key): string
-    {
-        $value = $tags[$key] ?? null;
-
-        return \is_string($value) || \is_int($value) || \is_float($value) ? (string) $value : '';
+        return $series;
     }
 
     /**
-     * @param array<string, mixed>               $series
-     * @param array{label: string, value: float} $entry
+     * @param list<HostSample> $history
+     *
+     * @return array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}>
      */
-    private function append(array &$series, string $name, array $entry): void
+    private function hostSeries(array $history): array
     {
+        $series = [];
+
+        foreach ($history as $sample) {
+            $label = $sample->getRecordedAt()->format(\DATE_ATOM);
+
+            $this->append($series, self::HOST_CPU_PERCENT, $label, $sample->getCpuPercent());
+            $this->append($series, self::HOST_MEMORY_USED, $label, $sample->getMemoryUsedBytes());
+            $this->append($series, self::HOST_MEMORY_TOTAL, $label, $sample->getMemoryTotalBytes());
+            $this->append($series, self::HOST_CPU_COUNT, $label, $sample->getCpuCount());
+            $this->append($series, self::HOST_IMAGES_TOTAL, $label, $sample->getImagesTotal());
+            $this->append($series, self::HOST_GOROUTINES, $label, $sample->getGoroutines());
+            $this->append($series, self::HOST_FDS_OPEN, $label, $sample->getFdsOpen());
+            $this->append($series, self::CONTAINERS_TOTAL, $label, $sample->getContainersTotal());
+            $this->append($series, self::CONTAINERS_RUNNING, $label, $sample->getContainersRunning());
+            $this->append($series, self::CONTAINERS_STOPPED, $label, $sample->getContainersStopped());
+        }
+
+        return $series;
+    }
+
+    /**
+     * @param array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}> $series
+     */
+    private function append(array &$series, string $name, string $label, int|float|null $value): void
+    {
+        if (null === $value) {
+            return;
+        }
+
         $series[$name] ??= ['labels' => [], 'values' => [], 'latest' => 0.0, 'count' => 0];
-        $series[$name]['labels'][] = $entry['label'];
-        $series[$name]['values'][] = $entry['value'];
-        $series[$name]['latest'] = $entry['value'];
+        $series[$name]['labels'][] = $label;
+        $series[$name]['values'][] = (float) $value;
+        $series[$name]['latest'] = (float) $value;
         ++$series[$name]['count'];
     }
 }

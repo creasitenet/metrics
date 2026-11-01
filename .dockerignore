@@ -8,7 +8,6 @@
 var/cache
 var/log
 var/data
-var/postgres
 vendor
 docker/caddy/*.bak
 README.md

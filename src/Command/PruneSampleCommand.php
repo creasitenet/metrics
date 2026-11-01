@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace App\Command;
 
-use App\Repository\DataPointRepository;
+use App\Repository\ContainerSampleRepository;
+use App\Repository\HostSampleRepository;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -12,11 +13,12 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
-#[AsCommand(name: 'app:data-point:prune', description: 'Remove points older than the configured retention period.')]
-final class PruneDataPointCommand extends Command
+#[AsCommand(name: 'app:sample:prune', description: 'Remove samples older than the configured retention period.')]
+final class PruneSampleCommand extends Command
 {
     public function __construct(
-        private readonly DataPointRepository $dataPoints,
+        private readonly ContainerSampleRepository $containerSamples,
+        private readonly HostSampleRepository $hostSamples,
         #[Autowire('%app.metrics.retention_days%')]
         private readonly int $retentionDays,
     ) {
@@ -46,8 +48,16 @@ final class PruneDataPointCommand extends Command
             return Command::INVALID;
         }
 
-        $deleted = $this->dataPoints->pruneBefore(new \DateTimeImmutable(\sprintf('-%d days', $days)));
-        $output->writeln(\sprintf('<info>%d point(s) removed (older than %d day(s)).</info>', $deleted, $days));
+        $before = new \DateTimeImmutable(\sprintf('-%d days', $days));
+        $containerRows = $this->containerSamples->pruneBefore($before);
+        $hostRows = $this->hostSamples->pruneBefore($before);
+
+        $output->writeln(\sprintf(
+            '<info>%d container sample(s) and %d host sample(s) removed (older than %d day(s)).</info>',
+            $containerRows,
+            $hostRows,
+            $days,
+        ));
 
         return Command::SUCCESS;
     }

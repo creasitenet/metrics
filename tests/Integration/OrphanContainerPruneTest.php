@@ -4,27 +4,34 @@ declare(strict_types=1);
 
 namespace App\Tests\Integration;
 
-use App\Dto\MetricPoint;
+use App\Collector\Docker\DockerEngineClient;
+use App\Dto\ContainerSample;
+use App\Dto\ContainerSnapshot;
+use App\Dto\DockerCollection;
+use App\Dto\HostSample;
+use App\Entity\Container;
 use App\Entity\ContainerLog;
-use App\Entity\DataPoint;
-use App\Entity\DataState;
-use App\Enum\MetricType;
+use App\Entity\ContainerSample as ContainerSampleEntity;
+use App\Entity\HostSample as HostSampleEntity;
 use App\Metrics\ContainerLogsWriter;
 use App\Metrics\MetricsWriter;
+use App\Metrics\OrphanContainerPruner;
 use App\Repository\ContainerLogRepository;
-use App\Repository\DataPointRepository;
-use App\Repository\DataStateRepository;
+use App\Repository\ContainerRepository;
+use App\Repository\ContainerSampleRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\SchemaTool;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class OrphanContainerPruneTest extends KernelTestCase
 {
     private EntityManagerInterface $entityManager;
     private MetricsWriter $metricsWriter;
     private ContainerLogsWriter $logsWriter;
-    private DataStateRepository $dataStates;
-    private DataPointRepository $dataPoints;
+    private ContainerRepository $containers;
+    private ContainerSampleRepository $samples;
     private ContainerLogRepository $containerLogs;
 
     protected function setUp(): void
@@ -35,8 +42,8 @@ final class OrphanContainerPruneTest extends KernelTestCase
         $this->entityManager = $container->get(EntityManagerInterface::class);
         $this->metricsWriter = $container->get(MetricsWriter::class);
         $this->logsWriter = $container->get(ContainerLogsWriter::class);
-        $this->dataStates = $container->get(DataStateRepository::class);
-        $this->dataPoints = $container->get(DataPointRepository::class);
+        $this->containers = $container->get(ContainerRepository::class);
+        $this->samples = $container->get(ContainerSampleRepository::class);
         $this->containerLogs = $container->get(ContainerLogRepository::class);
 
         $schemaTool = new SchemaTool($this->entityManager);
@@ -45,20 +52,23 @@ final class OrphanContainerPruneTest extends KernelTestCase
         $schemaTool->createSchema($metadata);
     }
 
-    public function testDeleteOrphanedKeepsLiveContainersAndHostRows(): void
+    public function testPruneRemovesDataOfContainersUnknownToDocker(): void
     {
-        $now = new \DateTimeImmutable('2026-01-01T12:00:00Z');
-        $liveId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-        $goneId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+        $now = new \DateTimeImmutable('2026-01-01T12:00:00+00:00');
+        $liveId = str_repeat('a', 64);
+        $goneId = str_repeat('b', 64);
 
-        $this->metricsWriter->write([
-            new MetricPoint('docker.host.memory_used_bytes', MetricType::GAUGE, 100.0, $now),
-            new MetricPoint('docker.containers.running', MetricType::STATE, 1.0, $now),
-            new MetricPoint('docker.container.cpu_percent', MetricType::GAUGE, 10.0, $now, ['container_id' => $liveId]),
-            new MetricPoint('docker.container.running', MetricType::STATE, 1.0, $now, ['container_id' => $liveId]),
-            new MetricPoint('docker.container.cpu_percent', MetricType::GAUGE, 20.0, $now, ['container_id' => $goneId]),
-            new MetricPoint('docker.container.running', MetricType::STATE, 1.0, $now, ['container_id' => $goneId]),
-        ]);
+        $this->metricsWriter->write(new DockerCollection(
+            [
+                $liveId => new ContainerSnapshot($liveId, 'live', 'live:1', 'running', 'Up 2 minutes', 'shop', 'api'),
+                $goneId => new ContainerSnapshot($goneId, 'gone', 'gone:1', 'running', 'Up 3 minutes', 'shop', 'worker'),
+            ],
+            [
+                $liveId => new ContainerSample($liveId, $now, true, 10.0, 1024, 4096),
+                $goneId => new ContainerSample($goneId, $now, true, 20.0, 2048, 4096),
+            ],
+            new HostSample($now, 30.0, 2048, 8192, 4, 3, 2, 1, 10, 170, 166),
+        ));
 
         $this->logsWriter->replace($liveId, [
             ['stream' => 'stdout', 'line' => 'live', 'recordedAt' => $now],
@@ -69,58 +79,82 @@ final class OrphanContainerPruneTest extends KernelTestCase
 
         $this->entityManager->clear();
 
-        self::assertSame(1, $this->dataStates->deleteOrphanedByContainerIds([$liveId]));
-        self::assertSame(1, $this->dataPoints->deleteOrphanedByContainerIds([$liveId]));
-        self::assertSame(1, $this->containerLogs->deleteOrphanedByContainerIds([$liveId]));
+        $result = $this->pruner([$liveId])->prune();
+
+        self::assertSame(1, $result['kept']);
+        self::assertSame(1, $result['containers']);
+        self::assertSame(1, $result['samples']);
+        self::assertSame(1, $result['logs']);
 
         $this->entityManager->clear();
 
-        $states = $this->entityManager->getRepository(DataState::class)->findAll();
-        $stateIds = array_map(static fn (DataState $s): ?string => $s->getContainerId(), $states);
-        sort($stateIds);
-        self::assertSame([null, $liveId], $stateIds);
+        $remainingContainers = $this->entityManager->getRepository(Container::class)->findAll();
+        self::assertCount(1, $remainingContainers);
+        self::assertSame($liveId, $remainingContainers[0]->getId());
 
-        $points = $this->entityManager->getRepository(DataPoint::class)->findAll();
-        $pointIds = array_map(static fn (DataPoint $p): ?string => $p->getContainerId(), $points);
-        sort($pointIds);
-        self::assertSame([null, $liveId], $pointIds);
+        $remainingSamples = $this->entityManager->getRepository(ContainerSampleEntity::class)->findAll();
+        self::assertCount(1, $remainingSamples);
+        self::assertSame($liveId, $remainingSamples[0]->getContainerId());
 
-        $logs = $this->entityManager->getRepository(ContainerLog::class)->findAll();
-        self::assertCount(1, $logs);
-        self::assertSame($liveId, $logs[0]->getContainerId());
+        $remainingLogs = $this->entityManager->getRepository(ContainerLog::class)->findAll();
+        self::assertCount(1, $remainingLogs);
+        self::assertSame($liveId, $remainingLogs[0]->getContainerId());
     }
 
-    public function testDeleteOrphanedWithEmptyKeepListRemovesAllPerContainerRows(): void
+    public function testPruneKeepsHostSamplesUntouched(): void
     {
-        $now = new \DateTimeImmutable('2026-01-01T12:00:00Z');
-        $goneId = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+        $now = new \DateTimeImmutable('2026-01-01T12:00:00+00:00');
+        $goneId = str_repeat('c', 64);
 
-        $this->metricsWriter->write([
-            new MetricPoint('docker.host.cpus', MetricType::STATE, 4.0, $now),
-            new MetricPoint('docker.container.memory_usage_bytes', MetricType::GAUGE, 1.0, $now, ['container_id' => $goneId]),
-            new MetricPoint('docker.container.running', MetricType::STATE, 1.0, $now, ['container_id' => $goneId]),
-        ]);
-        $this->logsWriter->replace($goneId, [
-            ['stream' => 'stdout', 'line' => 'x', 'recordedAt' => null],
-        ]);
-
-        self::assertSame(1, $this->dataStates->deleteOrphanedByContainerIds([]));
-        self::assertSame(1, $this->dataPoints->deleteOrphanedByContainerIds([]));
-        self::assertSame(1, $this->containerLogs->deleteOrphanedByContainerIds([]));
+        $this->metricsWriter->write(new DockerCollection(
+            [$goneId => new ContainerSnapshot($goneId, 'gone', 'gone:1', 'running', 'Up 3 minutes')],
+            [$goneId => new ContainerSample($goneId, $now, true, 20.0, 2048, 4096)],
+            new HostSample($now, 30.0, 2048, 8192, 4, 3, 2, 1, 10, 170, 166),
+        ));
 
         $this->entityManager->clear();
 
-        $states = $this->entityManager->getRepository(DataState::class)->findAll();
-        self::assertCount(1, $states);
-        self::assertNull($states[0]->getContainerId());
+        $result = $this->pruner([])->prune();
 
-        self::assertCount(0, $this->entityManager->getRepository(DataPoint::class)->findAll());
-        self::assertCount(0, $this->entityManager->getRepository(ContainerLog::class)->findAll());
+        self::assertSame(0, $result['kept']);
+        self::assertSame(1, $result['containers']);
+        self::assertSame(1, $result['samples']);
+
+        $this->entityManager->clear();
+
+        self::assertCount(0, $this->entityManager->getRepository(Container::class)->findAll());
+        self::assertCount(0, $this->entityManager->getRepository(ContainerSampleEntity::class)->findAll());
+
+        $hostSamples = $this->entityManager->getRepository(HostSampleEntity::class)->findAll();
+        self::assertCount(1, $hostSamples);
+        self::assertSame(30.0, $hostSamples[0]->getCpuPercent());
     }
 
     protected function tearDown(): void
     {
         parent::tearDown();
         $this->entityManager->close();
+    }
+
+    /**
+     * @param list<string> $liveContainerIds
+     */
+    private function pruner(array $liveContainerIds): OrphanContainerPruner
+    {
+        $payload = array_map(
+            static fn (string $id): array => ['Id' => $id, 'Names' => ['/'.$id]],
+            $liveContainerIds,
+        );
+
+        $client = new MockHttpClient(static fn (): MockResponse => new MockResponse(
+            json_encode($payload, \JSON_THROW_ON_ERROR),
+        ));
+
+        return new OrphanContainerPruner(
+            new DockerEngineClient($client, '/dev/null'),
+            $this->containers,
+            $this->samples,
+            $this->containerLogs,
+        );
     }
 }

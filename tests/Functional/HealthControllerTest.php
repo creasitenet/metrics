@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Tests\Functional;
 
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
-use Symfony\Component\HttpFoundation\Response;
 
 final class HealthControllerTest extends WebTestCase
 {
@@ -19,11 +18,12 @@ final class HealthControllerTest extends WebTestCase
         self::assertJsonStringEqualsJsonString('{"status":"ok"}', (string) $client->getResponse()->getContent());
     }
 
-    public function testDashboardRedirectsAnonymousUsersToLogin(): void
+    public function testDashboardIsPubliclyAccessible(): void
     {
         $client = self::createClient();
         $client->request('GET', '/');
 
-        self::assertResponseRedirects('/login', Response::HTTP_FOUND);
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('h1', 'Containers');
     }
 }

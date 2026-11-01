@@ -1,10 +1,8 @@
 parameters:
-    env(COLLECTOR_SCHEDULE_ENABLED): '1'
     env(COLLECTOR_INTERVAL): '30'
     env(DOCKER_SOCKET): '/var/run/docker.sock'
     env(METRICS_RETENTION_DAYS): '30'
     env(METRICS_LOG_TAIL): '500'
-    app.collector.schedule_enabled: '%env(bool:COLLECTOR_SCHEDULE_ENABLED)%'
     app.collector.interval_seconds: '%env(int:COLLECTOR_INTERVAL)%'
     app.collector.docker_socket: '%env(DOCKER_SOCKET)%'
     app.metrics.retention_days: '%env(int:METRICS_RETENTION_DAYS)%'
@@ -20,12 +18,6 @@ services:
         exclude:
             - '../src/Entity/'
             - '../src/Kernel.php'
-
-    App\Schedule:
-        arguments:
-            $collectorScheduleEnabled: '%app.collector.schedule_enabled%'
-            $collectorIntervalSeconds: '%app.collector.interval_seconds%'
-            $retentionDays: '%app.metrics.retention_days%'
 
     App\Collector\Docker\DockerEngineClient:
         arguments:

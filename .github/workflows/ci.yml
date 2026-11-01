@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: test
+      APP_SECRET: ci-not-a-production-secret
+      DATABASE_URL: sqlite:////tmp/metrics-test.sqlite
+      COLLECTOR_INTERVAL: '30'
+      DOCKER_SOCKET: /var/run/docker.sock
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: intl, pcntl, zip, pdo_sqlite
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Validate and lint
+        run: |
+          composer validate --strict
+          php bin/console lint:container
+          php bin/console lint:twig templates
+
+      - name: PHPUnit
+        run: vendor/bin/phpunit
+
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+
+      - name: PHP CS Fixer
+        run: vendor/bin/php-cs-fixer fix --dry-run --diff

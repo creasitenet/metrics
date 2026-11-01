@@ -3,6 +3,9 @@ doctrine:
         url: '%env(resolve:DATABASE_URL)%'
         use_savepoints: true
         profiling_collect_backtrace: '%kernel.debug%'
+        # app_user belongs to the removed authentication layer. It is kept in
+        # databases created by earlier versions and ignored by the ORM.
+        schema_filter: '~^(?!app_user$)~'
     orm:
         auto_generate_proxy_classes: true
         naming_strategy: doctrine.orm.naming_strategy.underscore_number_aware

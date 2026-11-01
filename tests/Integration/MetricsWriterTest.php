@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace App\Tests\Integration;
 
-use App\Dto\MetricPoint;
-use App\Entity\DataPoint;
-use App\Entity\DataState;
-use App\Enum\MetricType;
+use App\Dto\ContainerSample;
+use App\Dto\ContainerSnapshot;
+use App\Dto\DockerCollection;
+use App\Dto\HostSample;
+use App\Entity\Container;
+use App\Entity\ContainerSample as ContainerSampleEntity;
+use App\Entity\HostSample as HostSampleEntity;
 use App\Metrics\MetricsWriter;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\SchemaTool;
@@ -32,48 +35,91 @@ final class MetricsWriterTest extends KernelTestCase
         $schemaTool->createSchema($metadata);
     }
 
-    public function testWriteHistoricalMetricPersistsDataPoints(): void
+    public function testWritePersistsContainerSampleAndHostSample(): void
     {
-        $now = new \DateTimeImmutable();
-        $points = [
-            new MetricPoint('cpu_usage', MetricType::GAUGE, 45.5, $now, ['host' => 'server-1']),
-            new MetricPoint('cpu_usage', MetricType::GAUGE, 50.0, $now->modify('+10 seconds'), ['host' => 'server-1']),
-        ];
+        $now = new \DateTimeImmutable('2026-01-01T10:00:00+00:00');
 
-        $written = $this->writer->write($points);
+        $written = $this->writer->write(new DockerCollection(
+            ['abc-123' => new ContainerSnapshot('abc-123', 'api', 'api:1', 'running', 'Up 2 minutes', 'shop', 'api')],
+            ['abc-123' => new ContainerSample('abc-123', $now, true, 12.5, 1024, 4096)],
+            new HostSample($now, 30.0, 2048, 8192, 4, 3, 2, 1, 10, 170, 166),
+        ));
 
         self::assertSame(2, $written);
 
-        $dataPoints = $this->entityManager->getRepository(DataPoint::class)->findAll();
-        self::assertCount(2, $dataPoints);
-        self::assertSame(45.5, $dataPoints[0]->getValue());
-        self::assertSame(50.0, $dataPoints[1]->getValue());
+        $containers = $this->entityManager->getRepository(Container::class)->findAll();
+        self::assertCount(1, $containers);
+        self::assertSame('abc-123', $containers[0]->getId());
+        self::assertSame('api', $containers[0]->getName());
+        self::assertSame('shop', $containers[0]->getComposeProject());
+        self::assertSame('api', $containers[0]->getComposeService());
+
+        $samples = $this->entityManager->getRepository(ContainerSampleEntity::class)->findAll();
+        self::assertCount(1, $samples);
+        self::assertSame('abc-123', $samples[0]->getContainerId());
+        self::assertTrue($samples[0]->isRunning());
+        self::assertSame(12.5, $samples[0]->getCpuPercent());
+        self::assertSame(1024, $samples[0]->getMemoryUsedBytes());
+        self::assertSame(4096, $samples[0]->getMemoryLimitBytes());
+
+        $hostSamples = $this->entityManager->getRepository(HostSampleEntity::class)->findAll();
+        self::assertCount(1, $hostSamples);
+        self::assertSame(30.0, $hostSamples[0]->getCpuPercent());
+        self::assertSame(2048, $hostSamples[0]->getMemoryUsedBytes());
+        self::assertSame(8192, $hostSamples[0]->getMemoryTotalBytes());
+        self::assertSame(4, $hostSamples[0]->getCpuCount());
+        self::assertSame(3, $hostSamples[0]->getContainersTotal());
+        self::assertSame(2, $hostSamples[0]->getContainersRunning());
+        self::assertSame(1, $hostSamples[0]->getContainersStopped());
+        self::assertSame(10, $hostSamples[0]->getImagesTotal());
     }
 
-    public function testWriteStateMetricPerformsUpsertOnDataState(): void
+    public function testWriteUpdatesContainerMetadataInsteadOfDuplicating(): void
     {
-        $t1 = new \DateTimeImmutable('2026-01-01 10:00:00');
-        $t2 = new \DateTimeImmutable('2026-01-01 10:00:30');
+        $now = new \DateTimeImmutable('2026-01-01T10:00:00+00:00');
 
-        $point1 = new MetricPoint('container_status', MetricType::STATE, 1.0, $t1, ['container_id' => 'abc-123']);
-        $this->writer->write([$point1]);
-
-        $states = $this->entityManager->getRepository(DataState::class)->findAll();
-        self::assertCount(1, $states);
-        self::assertSame(1.0, $states[0]->getValue());
-        self::assertSame('abc-123', $states[0]->getContainerId());
-        self::assertEquals($t1, $states[0]->getUpdatedAt());
-
-        // second write for the same container updates the same row
-        $point2 = new MetricPoint('container_status', MetricType::STATE, 0.0, $t2, ['container_id' => 'abc-123']);
-        $this->writer->write([$point2]);
+        $this->writer->write(new DockerCollection(
+            ['abc-123' => new ContainerSnapshot('abc-123', 'api', 'api:1', 'running', 'Up 2 minutes', 'shop', 'api')],
+            ['abc-123' => new ContainerSample('abc-123', $now, true, 12.5, 1024, 4096)],
+            null,
+        ));
 
         $this->entityManager->clear();
 
-        $statesAfterUpdate = $this->entityManager->getRepository(DataState::class)->findAll();
-        self::assertCount(1, $statesAfterUpdate);
-        self::assertSame(0.0, $statesAfterUpdate[0]->getValue());
-        self::assertEquals($t2, $statesAfterUpdate[0]->getUpdatedAt());
+        $this->writer->write(new DockerCollection(
+            ['abc-123' => new ContainerSnapshot('abc-123', 'api', 'api:2', 'running', 'Up 5 minutes', 'shop', 'api', '/srv/shop', '/srv/shop/compose.yaml', 'storefront')],
+            ['abc-123' => new ContainerSample('abc-123', $now->modify('+30 seconds'), true, 20.0, 2048, 4096)],
+            null,
+        ));
+
+        $this->entityManager->clear();
+
+        $containers = $this->entityManager->getRepository(Container::class)->findAll();
+        self::assertCount(1, $containers);
+        self::assertSame('api:2', $containers[0]->getImage());
+        self::assertSame('Up 5 minutes', $containers[0]->getStatus());
+        self::assertSame('/srv/shop', $containers[0]->getComposeWorkingDir());
+        self::assertSame('/srv/shop/compose.yaml', $containers[0]->getComposeConfigFiles());
+        self::assertSame('storefront', $containers[0]->getGroup());
+
+        $samples = $this->entityManager->getRepository(ContainerSampleEntity::class)->findAll();
+        self::assertCount(2, $samples);
+    }
+
+    public function testWriteKeepsContainerWithoutSample(): void
+    {
+        $now = new \DateTimeImmutable('2026-01-01T10:00:00+00:00');
+
+        $written = $this->writer->write(new DockerCollection(
+            ['abc-123' => new ContainerSnapshot('abc-123', 'api', 'api:1', 'created', 'Created')],
+            [],
+            null,
+        ));
+
+        self::assertSame(0, $written);
+
+        $containers = $this->entityManager->getRepository(Container::class)->findAll();
+        self::assertCount(1, $containers);
     }
 
     protected function tearDown(): void

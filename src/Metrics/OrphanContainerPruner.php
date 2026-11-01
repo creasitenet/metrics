@@ -6,33 +6,37 @@ namespace App\Metrics;
 
 use App\Collector\Docker\DockerEngineClient;
 use App\Repository\ContainerLogRepository;
-use App\Repository\DataPointRepository;
-use App\Repository\DataStateRepository;
+use App\Repository\ContainerRepository;
+use App\Repository\ContainerSampleRepository;
 
 final class OrphanContainerPruner
 {
     public function __construct(
         private DockerEngineClient $docker,
-        private DataStateRepository $dataStates,
-        private DataPointRepository $dataPoints,
+        private ContainerRepository $containers,
+        private ContainerSampleRepository $samples,
         private ContainerLogRepository $containerLogs,
     ) {
     }
 
     /**
-     * Compare DB container IDs to Docker inventory (running + stopped) and delete orphans.
-     * Host-level rows (null containerId) are never touched. Metric catalog rows stay.
+     * Compare DB container ids to the Docker inventory (running + stopped) and delete orphans.
+     * Host samples are never touched.
      *
-     * @return array{states: int, points: int, logs: int, kept: int}
+     * @return array{containers: int, samples: int, logs: int, kept: int}
      */
     public function prune(): array
     {
         $keepIds = $this->liveContainerIds();
 
+        $samples = $this->samples->deleteOrphanedByContainerIds($keepIds);
+        $logs = $this->containerLogs->deleteOrphanedByContainerIds($keepIds);
+        $containers = $this->containers->deleteNotIn($keepIds);
+
         return [
-            'states' => $this->dataStates->deleteOrphanedByContainerIds($keepIds),
-            'points' => $this->dataPoints->deleteOrphanedByContainerIds($keepIds),
-            'logs' => $this->containerLogs->deleteOrphanedByContainerIds($keepIds),
+            'containers' => $containers,
+            'samples' => $samples,
+            'logs' => $logs,
             'kept' => \count($keepIds),
         ];
     }

@@ -4,17 +4,18 @@ Metrics is a simple, open-source, self-hosted **Docker host monitor**. A dedicat
 
 ![Metrics dashboard](docs/screenshots/dashboard.png)
 
-It runs on FrankenPHP (Caddy + PHP in one binary), with **SQLite by default** (low RAM, ideal for self-hosting). PostgreSQL or MySQL work if you point `DATABASE_URL` at your own server — Compose does not ship a database container.
+It runs on FrankenPHP (Caddy + PHP in one binary) with **SQLite** (single file in `./var/data`, low RAM, ideal for self-hosting).
 
 ## Features
 
 - Automatic Docker collection (host + containers) on a schedule
 - Host-level gauges (container counts, aggregated CPU/RAM)
 - Per-container charts (1h / 24h / 7d / 30d)
-- Compose grouping via `com.docker.compose.project` / `com.docker.compose.service` labels
-- Web login (email/password) to protect the dashboard
-- Symfony Scheduler + Messenger collector (ready for FrankenPHP worker mode later)
-- Retention pruning for historical points (and orphan GC for removed containers)
+- Compose grouping by folder → project → service (CPU/RAM totals per level)
+- Dozzle-style grouping via the `dev.dozzle.group` label
+- No built-in login: access control is delegated to a reverse proxy (Caddy, Traefik, nginx)
+- Collector loop in a plain PHP process (no Messenger, no Scheduler)
+- Retention pruning for historical samples (and orphan GC for removed containers)
 - Bounded container log tails (last 500 lines per container by default, collector-synced)
 
 ## Requirements
@@ -22,7 +23,7 @@ It runs on FrankenPHP (Caddy + PHP in one binary), with **SQLite by default** (l
 - Docker Engine with Docker Compose v2
 - Access to `/var/run/docker.sock` (or `DOCKER_SOCKET`) for the **collector** service
 
-**Security:** mounting `docker.sock` is equivalent to root on the Docker host. Only the collector mounts it. Keep the dashboard behind login and network controls.
+**Security:** mounting `docker.sock` is equivalent to root on the Docker host. Only the collector mounts it. The dashboard has no built-in authentication: keep it behind a reverse proxy that enforces access control (Basic auth, OAuth2 proxy, VPN).
 
 ## Quick start
 
@@ -30,16 +31,22 @@ Pick one deployment mode. Reverse proxy (Case 2) is the usual self-hosted setup;
 
 ### Case 1 — Standalone (direct Compose)
 
-Compose publishes the dashboard on the host. The port comes from `.env` (`METRICS_PORT`, default **8080**). Change it if something else already uses 8080 (e.g. another stack).
+Compose publishes the dashboard on the host, **bound to `127.0.0.1` by default** — the dashboard has no built-in authentication, so it must not be reachable from the network as-is. The port comes from `.env` (`METRICS_PORT`, default **8080**). Change it if something else already uses 8080 (e.g. another stack).
 
 ```bash
 cp .env.dist .env
 # optional: METRICS_PORT=8081 and DEFAULT_URI=http://localhost:8081
 docker compose up -d --build
-docker compose exec metrics php bin/console app:user:create admin@example.org --password='a-long-secret-passphrase'
 ```
 
 Open [http://localhost:8080](http://localhost:8080) (or your `METRICS_PORT`). Docker Compose reads `.env` for `${METRICS_PORT}` interpolation; pass `ENV_FILE=.env` if you want the same file injected into the containers instead of `.env.dist`.
+
+To reach the dashboard from another machine, set `METRICS_BIND=0.0.0.0` in `.env` — and put a reverse proxy in front of it, since access control is delegated to that proxy:
+
+```bash
+METRICS_BIND=0.0.0.0
+METRICS_PORT=8080
+```
 
 ### Case 2 — Reverse proxy (Nginx / Traefik / Caddy / NPM)
 
@@ -55,10 +62,9 @@ No host port. The UI is only reachable on the Docker network as **`http://metric
 
 ```bash
 docker compose up -d --build
-docker compose exec metrics php bin/console app:user:create admin@example.org --password='a-long-secret-passphrase'
 ```
 
-Migrations run on `metrics` startup. The `collector` service consumes the schedule every `COLLECTOR_INTERVAL` seconds (default 30).
+Migrations run on `metrics` startup. The `collector` service loops every `COLLECTOR_INTERVAL` seconds (default 30).
 
 Force one collection cycle:
 
@@ -76,20 +82,19 @@ ENV_FILE=.env docker compose up -d --build
 
 SQLite data persists in `./var/data` (shared by `metrics` and `collector`). Only the **collector** mounts `docker.sock` read-only.
 
-The collector already runs Scheduler + Messenger (`messenger:consume scheduler_default`). FrankenPHP worker mode is a later optimization to fold that loop into the web process — it is **not** required for automatic collection today.
+The collector is a plain PHP loop (`app:collector:loop`) that samples Docker every `COLLECTOR_INTERVAL` seconds and runs the daily retention/orphan maintenance on its first cycle of the day. It stops cleanly on `SIGTERM` / `SIGINT`, so `docker compose stop` never kills it mid-write.
 
-## Optional PostgreSQL / MySQL
+### Grouping
 
-Compose stays SQLite-only on purpose: a bundled Postgres instance wastes ~150 MB RAM at idle for a host monitor. Advanced setups set `DATABASE_URL` to an external database (same network, managed service, etc.):
+The dashboard builds a **host → folder → project → service → container** tree and sums CPU/RAM at each level:
 
-```bash
-# In .env.local
-DATABASE_URL="postgresql://user:pass@db:5432/metrics?serverVersion=16&charset=utf8"
-# or
-DATABASE_URL="mysql://user:pass@db:3306/metrics?serverVersion=8.0"
-```
+| Level | Source |
+|-------|--------|
+| Folder | `com.docker.compose.project.working_dir` |
+| Project | `dev.dozzle.group`, else `com.docker.compose.project` |
+| Service | `com.docker.compose.service`, else the container name |
 
-Schema migrations are portable Doctrine Schema API; application queries use standard DQL only.
+Containers without those labels are grouped under *Other containers* / *No Compose project* / *No service*.
 
 ## Operations
 
@@ -105,21 +110,21 @@ docker compose exec metrics wget -qO- http://127.0.0.1/healthz
 
 ### Retention
 
-Two scheduled jobs run on the `collector` (needs Docker socket for orphan GC):
+Two maintenance jobs run once a day from the `collector` (needs Docker socket for orphan GC):
 
 | When | What |
 |------|------|
-| **03:00** daily | Historical `data_point` rows older than `METRICS_RETENTION_DAYS` (default **30**) |
-| **03:05** daily | `data_state` / `data_point` / `container_log` for containers **removed** from Docker (`?all=1`, so stopped containers are kept) |
+| First cycle of the day | `container_sample` / `host_sample` rows older than `METRICS_RETENTION_DAYS` (default **30**) |
+| First cycle of the day | `container` / `container_sample` / `container_log` rows for containers **removed** from Docker (`?all=1`, so stopped containers are kept) |
 
-Host-level rows (`containerId` null) and the `metric` catalog are never pruned by the orphan job.
+Host samples are never pruned by the orphan job, and no container row is dropped while Docker still knows it.
 
 Manual run:
 
 ```bash
-docker compose exec metrics php bin/console app:data-point:prune
+docker compose exec metrics php bin/console app:sample:prune
 # or override:
-docker compose exec metrics php bin/console app:data-point:prune --days=7
+docker compose exec metrics php bin/console app:sample:prune --days=7
 
 # Orphans (compare DB vs Docker inventory):
 docker compose exec collector php bin/console app:orphan-containers:prune
@@ -143,22 +148,33 @@ docker compose logs --tail=200 metrics collector
 docker compose exec metrics php bin/console about
 ```
 
-- Dashboard shows “Cannot reach Docker”: check the socket mount and permissions.
-- Empty charts: wait for a collector tick or run `app:collector:run`.
+- Empty charts: wait for a collector tick, then run `app:collector:run` in the collector container.
+- Collector logs “Docker socket is not readable”: check the socket mount and permissions.
 
 ## Local installation without Docker Compose
 
 Still requires a readable Docker socket for the product to be useful:
 
 ```bash
-cp .env.dist .env.local
+cp .env.dist .env
 composer install
 php bin/console doctrine:migrations:migrate --no-interaction
-php bin/console app:user:create admin@example.org --password='a-long-secret-passphrase'
-php bin/console messenger:consume scheduler_default -vv
+php bin/console app:collector:loop
 # in another terminal:
 symfony server:start
 ```
+
+## Contributing
+
+Bug reports and pull requests are welcome on GitHub. Run the quality checks before opening a PR:
+
+```bash
+composer test
+composer analyse
+composer cs-check
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for a short workflow.
 
 ## Quality and tests
 
@@ -174,16 +190,27 @@ vendor/bin/php-cs-fixer fix --dry-run --diff
 ## Architecture
 
 ```text
-docker.sock → collector (Scheduler) → MetricsWriter → Metric / DataPoint
-                                                          ↓
-                                              metrics dashboard (DB only)
+docker.sock → collector (loop) → MetricsWriter → container / container_sample / host_sample
+                                                        ↓
+                                            metrics dashboard (DB only)
 ```
 
 - `src/Collector/Docker/`: Engine client, mapper, collector
-- `src/Metrics/MetricsWriter.php`: transactional metric + point writes
-- `src/Schedule.php` + `CollectMetricsMessage`: recurring collection
-- `src/Entity/`: `User`, `Metric`, `DataPoint`, `DataState` (indexed `containerId`)
+- `src/Metrics/MetricsWriter.php`: transactional container + sample writes
+- `src/Command/CollectorLoopCommand.php`: sampling loop + daily maintenance (SIGTERM/SIGINT aware)
+- `src/Entity/`: `Container` (metadata), `ContainerSample` (history), `HostSample` (host history), `ContainerLog`
 - `compose.yaml`: FrankenPHP `metrics` (UI) + `collector` (socket); SQLite volume shared
+
+### Data model
+
+| Table | Holds | Pruned by |
+|-------|-------|-----------|
+| `container` | Identity + Compose/Dozzle labels of each container | Orphan GC |
+| `container_sample` | CPU, RAM and running state over time | Retention + orphan GC |
+| `host_sample` | Host CPU, RAM, container/image counts over time | Retention |
+| `container_log` | Last N log lines per container | Orphan GC |
+
+CPU follows the `docker stats` scale: **100 % = one fully used core**.
 
 ## Security
 

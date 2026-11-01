@@ -108,58 +108,95 @@
     {% endif %}
 
     <section class="section-block">
-        <div class="section-head"><span class="eyebrow">CONTAINERS</span><h2>Collected metrics</h2></div>
+        <div class="section-head"><span class="eyebrow">CONTAINERS</span><h2>Applications</h2></div>
         {% if groups %}
-            {% for group, containers in groups %}
+            {% for folder in groups %}
                 <div class="compose-group">
-                    <h3>{{ group == 'ungrouped' ? 'Other containers' : group }}</h3>
-                    <div class="container-table-wrap">
-                        <table class="container-table">
-                            <colgroup>
-                                <col class="col-name">
-                                <col class="col-state">
-                                <col class="col-state">
-                                <col class="col-image">
-                                <col class="col-cpu">
-                                <col class="col-mem">
-                            </colgroup>
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>State</th>
-                                    <th>Status</th>
-                                    <th>Image</th>
-                                    <th>CPU % <span class="muted" title="Same scale as docker stats: 100% = one full CPU core">*</span></th>
-                                    <th>Memory</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                            {% for c in containers %}
-                                <tr>
-                                    <td class="cell-name">
-                                        <a href="{{ path('app_container_show', {id: c.short_id, period: period}) }}" title="{{ c.name }}">
-                                            <code>{{ c.name }}</code>
-                                        </a>
-                                    </td>
-                                    <td class="cell-state"><span class="state-pill state-{{ c.state|lower }}">{{ c.state }}</span></td>
-                                    <td class="cell-status muted" title="{{ c.status }}">{{ c.status }}</td>
-                                    <td class="cell-image muted" title="{{ c.image }}">{{ c.image }}</td>
-                                    <td class="cell-num">{{ c.cpu_percent is not null ? c.cpu_percent|number_format(1, '.', ',') : '—' }}</td>
-                                    <td class="cell-num">
-                                        {% if c.memory_used_bytes is not null %}
-                                            {{ c.memory_used_bytes|format_bytes }}
-                                            {% if c.memory_limit_bytes %}
-                                                <span class="mem-limit">/ {{ c.memory_limit_bytes|format_bytes(0) }}</span>
-                                            {% endif %}
-                                        {% else %}
-                                            —
-                                        {% endif %}
-                                    </td>
-                                </tr>
+                    <header class="group-head">
+                        <div>
+                            <h3>{{ folder.label }}</h3>
+                            {% if folder.path %}
+                                <code class="group-path">{{ folder.path }}</code>
+                            {% endif %}
+                        </div>
+                        <div class="group-totals">
+                            <span title="Sum of container CPU (100% = 1 core)"><b>{{ folder.cpu_percent|number_format(1, '.', ',') }}%</b> CPU</span>
+                            <span title="Sum of container memory"><b>{{ folder.memory_used_bytes|format_bytes }}</b> RAM</span>
+                            <span class="muted">{{ folder.container_count }} container{{ folder.container_count != 1 ? 's' : '' }}</span>
+                        </div>
+                    </header>
+
+                    {% for project in folder.projects %}
+                        <div class="compose-project">
+                            <header class="project-head">
+                                <h4>{{ project.label }}</h4>
+                                <div class="group-totals">
+                                    <span><b>{{ project.cpu_percent|number_format(1, '.', ',') }}%</b> CPU</span>
+                                    <span><b>{{ project.memory_used_bytes|format_bytes }}</b> RAM</span>
+                                    <span class="muted">{{ project.container_count }} container{{ project.container_count != 1 ? 's' : '' }}</span>
+                                </div>
+                            </header>
+
+                            {% for service in project.services %}
+                                <div class="compose-service">
+                                    <header class="service-head">
+                                        <span class="service-name">{{ service.label }}</span>
+                                        <span class="group-totals">
+                                            <span><b>{{ service.cpu_percent|number_format(1, '.', ',') }}%</b> CPU</span>
+                                            <span><b>{{ service.memory_used_bytes|format_bytes }}</b> RAM</span>
+                                        </span>
+                                    </header>
+                                    <div class="container-table-wrap">
+                                        <table class="container-table">
+                                            <colgroup>
+                                                <col class="col-name">
+                                                <col class="col-state">
+                                                <col class="col-state">
+                                                <col class="col-image">
+                                                <col class="col-cpu">
+                                                <col class="col-mem">
+                                            </colgroup>
+                                            <thead>
+                                                <tr>
+                                                    <th>Name</th>
+                                                    <th>State</th>
+                                                    <th>Status</th>
+                                                    <th>Image</th>
+                                                    <th>CPU % <span class="muted" title="Same scale as docker stats: 100% = one full CPU core">*</span></th>
+                                                    <th>Memory</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                            {% for c in service.containers %}
+                                                <tr>
+                                                    <td class="cell-name">
+                                                        <a href="{{ path('app_container_show', {id: c.short_id, period: period}) }}" title="{{ c.name }}">
+                                                            <code>{{ c.name }}</code>
+                                                        </a>
+                                                    </td>
+                                                    <td class="cell-state"><span class="state-pill state-{{ c.state|lower }}">{{ c.state }}</span></td>
+                                                    <td class="cell-status muted" title="{{ c.status }}">{{ c.status }}</td>
+                                                    <td class="cell-image muted" title="{{ c.image }}">{{ c.image }}</td>
+                                                    <td class="cell-num">{{ c.cpu_percent is not null ? c.cpu_percent|number_format(1, '.', ',') : '—' }}</td>
+                                                    <td class="cell-num">
+                                                        {% if c.memory_used_bytes is not null %}
+                                                            {{ c.memory_used_bytes|format_bytes }}
+                                                            {% if c.memory_limit_bytes %}
+                                                                <span class="mem-limit">/ {{ c.memory_limit_bytes|format_bytes(0) }}</span>
+                                                            {% endif %}
+                                                        {% else %}
+                                                            —
+                                                        {% endif %}
+                                                    </td>
+                                                </tr>
+                                            {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
+                        </div>
+                    {% endfor %}
                 </div>
             {% endfor %}
         {% else %}

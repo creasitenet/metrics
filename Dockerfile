@@ -12,20 +12,17 @@ FROM composer:2.8 AS composer
 ###############################################################################
 FROM dunglas/frankenphp:1-php8.5-alpine AS runtime
 
-# FrankenPHP already provides OPcache and PDO SQLite. Only extensions missing
-# from the official image are compiled here.
+# FrankenPHP already provides OPcache and PDO SQLite. intl is required by Symfony;
+# pcntl lets the collector loop handle SIGTERM/SIGINT and stop on a clean cycle.
 RUN set -eux; \
     apk add --no-cache \
         icu-libs \
-        libpq \
-        bash \
         tini \
         su-exec; \
     apk add --no-cache --virtual .build-deps \
         icu-dev \
-        postgresql-dev \
         $PHPIZE_DEPS; \
-    docker-php-ext-install -j"$(nproc)" intl pdo_pgsql; \
+    docker-php-ext-install -j"$(nproc)" intl pcntl; \
     apk del .build-deps; \
     mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"; \
     echo "memory_limit = 256M" > "$PHP_INI_DIR/conf.d/zz-memory.ini"

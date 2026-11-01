@@ -5,12 +5,11 @@ declare(strict_types=1);
 namespace App\Tests\Unit;
 
 use App\Collector\Docker\DockerMetricsMapper;
-use App\Enum\MetricType;
 use PHPUnit\Framework\TestCase;
 
 final class DockerMetricsMapperTest extends TestCase
 {
-    public function testItMapsHostAndContainerGaugesWithComposeLabels(): void
+    public function testItMapsHostAndContainerMetricsWithComposeLabels(): void
     {
         $now = new \DateTimeImmutable('2026-07-24T10:00:00+00:00');
         $info = [
@@ -53,26 +52,93 @@ final class DockerMetricsMapperTest extends TestCase
             ],
         ];
 
-        $points = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
-        $byMetric = [];
-        foreach ($points as $point) {
-            $byMetric[$point->metric][] = $point;
-        }
+        $collection = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
 
-        self::assertSame(1.0, $byMetric['docker.containers.running'][0]->value);
-        self::assertSame(MetricType::STATE, $byMetric['docker.containers.running'][0]->type);
-        self::assertSame(2.0, $byMetric['docker.containers.total'][0]->value);
-        self::assertSame(1.0, $byMetric['docker.containers.stopped'][0]->value);
+        $snapshot = $collection->containers['abcdef1234567890'];
+        self::assertSame('api', $snapshot->name);
+        self::assertSame('shop', $snapshot->composeProject);
+        self::assertSame('api', $snapshot->composeService);
+        self::assertNull($snapshot->composeWorkingDir);
+        self::assertNull($snapshot->group);
+
+        $sample = $collection->sampleFor('abcdef1234567890');
+        self::assertNotNull($sample);
+        self::assertTrue($sample->running);
         // Prefer inactive_file over legacy cache (100M would have left only 20M).
-        self::assertSame(100_000_000.0, $byMetric['docker.container.memory_used_bytes'][0]->value);
-        self::assertSame(512_000_000.0, $byMetric['docker.container.memory_limit_bytes'][0]->value);
-        self::assertSame('api', $byMetric['docker.container.cpu_percent'][0]->tags['container_name']);
-        self::assertSame('shop', $byMetric['docker.container.cpu_percent'][0]->tags['compose_project']);
-        self::assertSame('api', $byMetric['docker.container.cpu_percent'][0]->tags['compose_service']);
-        self::assertSame(40.0, $byMetric['docker.container.cpu_percent'][0]->value);
-        self::assertSame(40.0, $byMetric['docker.host.cpu_percent'][0]->value);
-        self::assertSame(4.0, $byMetric['docker.host.cpu_count'][0]->value);
-        self::assertSame(100_000_000.0, $byMetric['docker.host.memory_used_bytes'][0]->value);
+        self::assertSame(100_000_000, $sample->memoryUsedBytes);
+        self::assertSame(512_000_000, $sample->memoryLimitBytes);
+        self::assertSame(40.0, $sample->cpuPercent);
+
+        $host = $collection->host;
+        self::assertNotNull($host);
+        self::assertSame(40.0, $host->cpuPercent);
+        self::assertSame(4, $host->cpuCount);
+        self::assertSame(100_000_000, $host->memoryUsedBytes);
+        self::assertSame(2, $host->containersTotal);
+        self::assertSame(1, $host->containersRunning);
+        self::assertSame(1, $host->containersStopped);
+    }
+
+    public function testItCollectsDozzleAndComposeFolderLabels(): void
+    {
+        $now = new \DateTimeImmutable('2026-07-24T10:00:00+00:00');
+        $info = ['Containers' => 1, 'ContainersRunning' => 1, 'NCPU' => 2, 'MemTotal' => 1_000_000_000];
+        $containers = [[
+            'Id' => 'abcdef1234567890',
+            'Names' => ['/api'],
+            'Image' => 'api:1',
+            'State' => 'running',
+            'Labels' => [
+                'com.docker.compose.project' => 'shop',
+                'com.docker.compose.service' => 'api',
+                'com.docker.compose.project.working_dir' => '/srv/shop',
+                'com.docker.compose.project.config_files' => '/srv/shop/compose.yaml',
+                'dev.dozzle.group' => 'storefront',
+            ],
+        ]];
+
+        $collection = (new DockerMetricsMapper())->map($info, $containers, [], $now);
+
+        $snapshot = $collection->containers['abcdef1234567890'];
+        self::assertSame('/srv/shop', $snapshot->composeWorkingDir);
+        self::assertSame('/srv/shop/compose.yaml', $snapshot->composeConfigFiles);
+        self::assertSame('storefront', $snapshot->group);
+    }
+
+    public function testStoppedContainerHasNoCpuOrMemoryMetrics(): void
+    {
+        $now = new \DateTimeImmutable('2026-07-24T10:00:00+00:00');
+        $info = ['Containers' => 1, 'ContainersRunning' => 0, 'NCPU' => 2, 'MemTotal' => 1_000_000_000];
+        $containers = [[
+            'Id' => 'abcdef1234567890',
+            'Names' => ['/api'],
+            'Image' => 'api:1',
+            'State' => 'exited',
+            'Labels' => [],
+        ]];
+        $stats = [
+            'abcdef1234567890' => [
+                'cpu_stats' => [
+                    'cpu_usage' => ['total_usage' => 2000],
+                    'system_cpu_usage' => 10_000,
+                    'online_cpus' => 1,
+                ],
+                'precpu_stats' => [
+                    'cpu_usage' => ['total_usage' => 1000],
+                    'system_cpu_usage' => 5_000,
+                ],
+                'memory_stats' => ['usage' => 1_000, 'limit' => 1_000_000],
+            ],
+        ];
+
+        $collection = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
+
+        $sample = $collection->sampleFor('abcdef1234567890');
+        self::assertNotNull($sample);
+        self::assertFalse($sample->running);
+        self::assertNull($sample->cpuPercent);
+        self::assertNull($sample->memoryUsedBytes);
+        self::assertNull($sample->memoryLimitBytes);
     }
 
     public function testHostCpuPercentIsSumOfContainersNotAverage(): void
@@ -88,15 +154,10 @@ final class DockerMetricsMapperTest extends TestCase
             'bbbb' => $this->statsWithCpu(1000, 1500, 5_000, 10_000, 2), // 20%
         ];
 
-        $points = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
-        $hostCpu = null;
-        foreach ($points as $point) {
-            if ('docker.host.cpu_percent' === $point->metric) {
-                $hostCpu = $point->value;
-            }
-        }
+        $collection = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
 
-        self::assertSame(60.0, $hostCpu);
+        self::assertNotNull($collection->host);
+        self::assertSame(60.0, $collection->host->cpuPercent);
     }
 
     public function testMemoryPrefersTotalInactiveFileOnCgroupV1(): void
@@ -132,15 +193,44 @@ final class DockerMetricsMapperTest extends TestCase
             ],
         ];
 
-        $points = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
-        $mem = null;
-        foreach ($points as $point) {
-            if ('docker.container.memory_used_bytes' === $point->metric) {
-                $mem = $point->value;
-            }
-        }
+        $collection = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
 
-        self::assertSame(2_700_000_000.0, $mem);
+        $sample = $collection->sampleFor('cccc');
+        self::assertNotNull($sample);
+        self::assertSame(2_700_000_000, $sample->memoryUsedBytes);
+    }
+
+    public function testMemoryLimitFallsBackToHostTotalWhenContainerHasNoLimit(): void
+    {
+        $now = new \DateTimeImmutable('2026-07-24T10:00:00+00:00');
+        $info = ['Containers' => 1, 'ContainersRunning' => 1, 'NCPU' => 1, 'MemTotal' => 4_000_000_000];
+        $containers = [[
+            'Id' => 'dddd',
+            'Names' => ['/app'],
+            'Image' => 'app',
+            'State' => 'running',
+            'Labels' => [],
+        ]];
+        $stats = [
+            'dddd' => [
+                'cpu_stats' => [
+                    'cpu_usage' => ['total_usage' => 2000],
+                    'system_cpu_usage' => 10_000,
+                    'online_cpus' => 1,
+                ],
+                'precpu_stats' => [
+                    'cpu_usage' => ['total_usage' => 1000],
+                    'system_cpu_usage' => 5_000,
+                ],
+                'memory_stats' => ['usage' => 1_000, 'limit' => 8_000_000_000],
+            ],
+        ];
+
+        $collection = (new DockerMetricsMapper())->map($info, $containers, $stats, $now);
+
+        $sample = $collection->sampleFor('dddd');
+        self::assertNotNull($sample);
+        self::assertSame(4_000_000_000, $sample->memoryLimitBytes);
     }
 
     /**
