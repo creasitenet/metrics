@@ -36,15 +36,17 @@ chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR" /var/www/html/var || true
 mkdir -p /data/caddy/locks /config/caddy
 chown -R "$APP_USER:$APP_GROUP" /data/caddy /config/caddy || true
 
+MIGRATE_PHP="${MIGRATION_PHP:-php -d memory_limit=512M}"
+
 # 3) Run migrations as the application user.
 if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
     echo "[entrypoint] Running database migrations..."
     # shellcheck disable=SC2086
-    su-exec "$APP_USER:$APP_GROUP" php /var/www/html/bin/console \
+    su-exec "$APP_USER:$APP_GROUP" $MIGRATE_PHP /var/www/html/bin/console \
         doctrine:migrations:migrate --no-interaction --allow-no-migration || {
         echo "[entrypoint] First migration attempt failed, retrying in 5s..." >&2
         sleep 5
-        su-exec "$APP_USER:$APP_GROUP" php /var/www/html/bin/console \
+        su-exec "$APP_USER:$APP_GROUP" $MIGRATE_PHP /var/www/html/bin/console \
             doctrine:migrations:migrate --no-interaction --allow-no-migration
     }
 fi

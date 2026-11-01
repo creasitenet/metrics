@@ -169,30 +169,36 @@ final class Version20261025140000 extends AbstractMigration
 
     private function backfillContainers(): void
     {
-        $metadata = [];
-        $latest = null;
-
-        $rows = $this->fetchAll(
-            'SELECT dp.container_id AS container_id, dp.tags AS tags, dp.recorded_at AS recorded_at
-             FROM data_point dp WHERE dp.container_id IS NOT NULL ORDER BY dp.recorded_at'
+        /** @var list<string> $ids */
+        $ids = $this->connection->fetchFirstColumn(
+            'SELECT container_id FROM data_point WHERE container_id IS NOT NULL
+             UNION SELECT container_id FROM data_state WHERE container_id IS NOT NULL',
         );
-        foreach ($rows as $row) {
-            $this->mergeTags($metadata, (string) $row['container_id'], $this->decodeTags($row['tags']));
-            $latest = $this->later($latest, (string) $row['recorded_at']);
-        }
 
-        $rows = $this->fetchAll(
-            'SELECT ds.container_id AS container_id, ds.tags AS tags, ds.updated_at AS updated_at
-             FROM data_state ds WHERE ds.container_id IS NOT NULL ORDER BY ds.updated_at'
-        );
-        foreach ($rows as $row) {
-            $this->mergeTags($metadata, (string) $row['container_id'], $this->decodeTags($row['tags']));
-            $latest = $this->later($latest, (string) $row['updated_at']);
-        }
+        $fallbackUpdatedAt = new \DateTimeImmutable();
 
-        $updatedAt = $this->parseDate($latest ?? (new \DateTimeImmutable())->format('Y-m-d H:i:s'));
+        foreach ($ids as $id) {
+            $tags = [];
+            $latest = null;
 
-        foreach ($metadata as $id => $tags) {
+            $points = $this->connection->executeQuery(
+                'SELECT tags, recorded_at FROM data_point WHERE container_id = ? ORDER BY recorded_at',
+                [$id],
+            );
+            while ($row = $points->fetchAssociative()) {
+                $this->mergeTags($tags, $this->decodeTags($row['tags']));
+                $latest = $this->later($latest, (string) $row['recorded_at']);
+            }
+
+            $states = $this->connection->executeQuery(
+                'SELECT tags, updated_at FROM data_state WHERE container_id = ? ORDER BY updated_at',
+                [$id],
+            );
+            while ($row = $states->fetchAssociative()) {
+                $this->mergeTags($tags, $this->decodeTags($row['tags']));
+                $latest = $this->later($latest, (string) $row['updated_at']);
+            }
+
             $this->connection->insert('container', [
                 'id' => $id,
                 'name' => $this->tagString($tags, 'container_name', $id),
@@ -204,130 +210,141 @@ final class Version20261025140000 extends AbstractMigration
                 'compose_working_dir' => null,
                 'compose_config_files' => null,
                 'dozzle_group' => null,
-                'updated_at' => $updatedAt,
+                'updated_at' => $this->parseDate($latest ?? $fallbackUpdatedAt->format('Y-m-d H:i:s')),
             ], ['updated_at' => Types::DATETIMETZ_IMMUTABLE]);
         }
     }
 
     private function backfillContainerSamples(): void
     {
-        $rows = $this->fetchAll(
-            'SELECT dp.container_id AS container_id, dp.recorded_at AS recorded_at, m.name AS metric, dp.value AS value, dp.tags AS tags
-             FROM data_point dp JOIN metric m ON m.id = dp.metric_id
-             WHERE dp.container_id IS NOT NULL
-             ORDER BY dp.container_id, dp.recorded_at, dp.id'
-        );
-
-        $samples = [];
-        foreach ($rows as $row) {
-            $key = $row['container_id'].'@'.$row['recorded_at'];
-            if (!isset($samples[$key])) {
-                $samples[$key] = [
-                    'container_id' => (string) $row['container_id'],
-                    'recorded_at' => (string) $row['recorded_at'],
-                    'cpu_percent' => null,
-                    'memory_used_bytes' => null,
-                    'running' => null,
-                    'tags' => $this->decodeTags($row['tags']),
-                ];
-            }
-
-            $value = (float) $row['value'];
-            if ('docker.container.cpu_percent' === $row['metric']) {
-                $samples[$key]['cpu_percent'] = $value;
-            } elseif ('docker.container.memory_used_bytes' === $row['metric']) {
-                $samples[$key]['memory_used_bytes'] = (int) $value;
-            }
-        }
-
-        $states = $this->fetchAll(
-            'SELECT ds.container_id AS container_id, ds.updated_at AS updated_at, m.name AS metric, ds.value AS value
-             FROM data_state ds JOIN metric m ON m.id = ds.metric_id
-             WHERE ds.container_id IS NOT NULL'
-        );
-
         $runningByContainer = [];
         $limitByContainer = [];
-        foreach ($states as $row) {
+        $states = $this->connection->executeQuery(
+            'SELECT ds.container_id AS container_id, ds.updated_at AS updated_at, m.name AS metric, ds.value AS value
+             FROM data_state ds JOIN metric m ON m.id = ds.metric_id
+             WHERE ds.container_id IS NOT NULL
+               AND m.name IN (?, ?)',
+            ['docker.container.running', 'docker.container.memory_limit_bytes'],
+        );
+        while ($row = $states->fetchAssociative()) {
+            $containerId = (string) $row['container_id'];
             if ('docker.container.running' === $row['metric']) {
-                $runningByContainer[(string) $row['container_id']] = (float) $row['value'] > 0.0;
-            } elseif ('docker.container.memory_limit_bytes' === $row['metric']) {
-                $limitByContainer[(string) $row['container_id']] = [
+                $runningByContainer[$containerId] = (float) $row['value'] > 0.0;
+            } else {
+                $limitByContainer[$containerId] = [
                     'recorded_at' => (string) $row['updated_at'],
                     'value' => (int) (float) $row['value'],
                 ];
             }
         }
 
-        foreach ($samples as $sample) {
-            $containerId = $sample['container_id'];
-            $tags = $sample['tags'];
+        /** @var list<string> $ids */
+        $ids = $this->connection->fetchFirstColumn(
+            'SELECT DISTINCT container_id FROM data_point WHERE container_id IS NOT NULL',
+        );
 
-            $running = $sample['running'];
-            if (null === $running) {
+        foreach ($ids as $containerId) {
+            $samples = [];
+            $rows = $this->connection->executeQuery(
+                'SELECT dp.recorded_at AS recorded_at, m.name AS metric, dp.value AS value, dp.tags AS tags
+                 FROM data_point dp JOIN metric m ON m.id = dp.metric_id
+                 WHERE dp.container_id = ?
+                   AND m.name IN (?, ?)
+                 ORDER BY dp.recorded_at, dp.id',
+                [$containerId, 'docker.container.cpu_percent', 'docker.container.memory_used_bytes'],
+            );
+            while ($row = $rows->fetchAssociative()) {
+                $key = (string) $row['recorded_at'];
+                if (!isset($samples[$key])) {
+                    $samples[$key] = [
+                        'recorded_at' => $key,
+                        'cpu_percent' => null,
+                        'memory_used_bytes' => null,
+                        'tags' => $this->decodeTags($row['tags']),
+                    ];
+                }
+
+                $value = (float) $row['value'];
+                if ('docker.container.cpu_percent' === $row['metric']) {
+                    $samples[$key]['cpu_percent'] = $value;
+                } else {
+                    $samples[$key]['memory_used_bytes'] = (int) $value;
+                }
+            }
+
+            foreach ($samples as $sample) {
+                $tags = $sample['tags'];
                 $state = $this->tagString($tags, 'state', '');
                 $running = '' !== $state
                     ? 'running' === $state
                     : ($runningByContainer[$containerId] ?? false);
+
+                $limit = null;
+                if (isset($limitByContainer[$containerId]) && $limitByContainer[$containerId]['recorded_at'] === $sample['recorded_at']) {
+                    $limit = $limitByContainer[$containerId]['value'];
+                }
+
+                $this->connection->insert('container_sample', [
+                    'container_id' => $containerId,
+                    'recorded_at' => $this->parseDate($sample['recorded_at']),
+                    'running' => $running,
+                    'cpu_percent' => $sample['cpu_percent'],
+                    'memory_used_bytes' => $sample['memory_used_bytes'],
+                    'memory_limit_bytes' => $limit,
+                ], [
+                    'recorded_at' => Types::DATETIMETZ_IMMUTABLE,
+                    'running' => Types::BOOLEAN,
+                    'cpu_percent' => Types::FLOAT,
+                    'memory_used_bytes' => Types::BIGINT,
+                    'memory_limit_bytes' => Types::BIGINT,
+                ]);
             }
 
-            $limit = null;
-            if (isset($limitByContainer[$containerId]) && $limitByContainer[$containerId]['recorded_at'] === $sample['recorded_at']) {
-                $limit = $limitByContainer[$containerId]['value'];
-            }
-
-            $this->connection->insert('container_sample', [
-                'container_id' => $containerId,
-                'recorded_at' => $this->parseDate($sample['recorded_at']),
-                'running' => $running,
-                'cpu_percent' => $sample['cpu_percent'],
-                'memory_used_bytes' => $sample['memory_used_bytes'],
-                'memory_limit_bytes' => $limit,
-            ], [
-                'recorded_at' => Types::DATETIMETZ_IMMUTABLE,
-                'running' => Types::BOOLEAN,
-                'cpu_percent' => Types::FLOAT,
-                'memory_used_bytes' => Types::BIGINT,
-                'memory_limit_bytes' => Types::BIGINT,
-            ]);
+            unset($samples);
         }
     }
 
     private function backfillHostSamples(): void
     {
-        $rows = $this->fetchAll(
-            'SELECT dp.recorded_at AS recorded_at, m.name AS metric, dp.value AS value
-             FROM data_point dp JOIN metric m ON m.id = dp.metric_id'
-        );
+        $gaugeNames = array_keys(self::HOST_GAUGES);
+        $stateNames = array_keys(self::HOST_STATES);
 
         $samples = [];
-        foreach ($rows as $row) {
-            $metric = (string) $row['metric'];
-            if (!isset(self::HOST_GAUGES[$metric])) {
-                continue;
-            }
 
+        $gaugeRows = $this->connection->executeQuery(
+            'SELECT dp.recorded_at AS recorded_at, m.name AS metric, dp.value AS value
+             FROM data_point dp JOIN metric m ON m.id = dp.metric_id
+             WHERE m.name IN ('.$this->quotedList($gaugeNames).')
+             ORDER BY dp.recorded_at',
+        );
+        while ($row = $gaugeRows->fetchAssociative()) {
+            $metric = (string) $row['metric'];
             $recordedAt = (string) $row['recorded_at'];
             $samples[$recordedAt] ??= $this->emptyHostSample($recordedAt);
             $samples[$recordedAt][self::HOST_GAUGES[$metric]] = (float) $row['value'];
         }
 
-        $rows = $this->fetchAll(
+        $stateRows = $this->connection->executeQuery(
             'SELECT ds.updated_at AS updated_at, m.name AS metric, ds.value AS value
-             FROM data_state ds JOIN metric m ON m.id = ds.metric_id'
+             FROM data_state ds JOIN metric m ON m.id = ds.metric_id
+             WHERE m.name IN ('.$this->quotedList($stateNames).')
+             ORDER BY ds.updated_at',
         );
-
-        foreach ($rows as $row) {
+        while ($row = $stateRows->fetchAssociative()) {
             $metric = (string) $row['metric'];
-            if (!isset(self::HOST_STATES[$metric])) {
-                continue;
-            }
-
             $updatedAt = (string) $row['updated_at'];
             $samples[$updatedAt] ??= $this->emptyHostSample($updatedAt);
             $samples[$updatedAt][self::HOST_STATES[$metric]] = (int) (float) $row['value'];
         }
 
+        $this->flushHostSamples($samples);
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $samples
+     */
+    private function flushHostSamples(array $samples): void
+    {
         foreach ($samples as $sample) {
             $this->connection->insert('host_sample', [
                 'recorded_at' => $this->parseDate((string) $sample['recorded_at']),
@@ -355,6 +372,12 @@ final class Version20261025140000 extends AbstractMigration
                 'fds_open' => Types::INTEGER,
             ]);
         }
+    }
+
+    /** @param list<string> $values */
+    private function quotedList(array $values): string
+    {
+        return implode(', ', array_map(fn (string $v): string => $this->connection->quote($v), $values));
     }
 
     private function restoreLegacyTables(): void
@@ -531,16 +554,16 @@ final class Version20261025140000 extends AbstractMigration
     }
 
     /**
-     * @param array<string, array<string, mixed>> $metadata
-     * @param array<string, mixed>                $tags
+     * @param array<string, mixed> $metadata
+     * @param array<string, mixed> $tags
      */
-    private function mergeTags(array &$metadata, string $containerId, array $tags): void
+    private function mergeTags(array &$metadata, array $tags): void
     {
         if ([] === $tags) {
             return;
         }
 
-        $metadata[$containerId] = array_merge($metadata[$containerId] ?? [], array_filter(
+        $metadata = array_merge($metadata, array_filter(
             $tags,
             static fn (mixed $value): bool => \is_string($value) && '' !== $value,
         ));
