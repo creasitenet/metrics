@@ -16,12 +16,29 @@ final class ContainerRepository extends ServiceEntityRepository
         parent::__construct($registry, Container::class);
     }
 
-    /** @return array<string, Container> keyed by container id */
-    public function indexedById(): array
+    /**
+     * Load only rows for the given Docker container ids (typically running
+     * containers). Avoids findAll() which pulls thousands of orphan rows into RAM.
+     *
+     * @param list<string> $ids
+     *
+     * @return array<string, Container> keyed by container id
+     */
+    public function findIndexedByIds(array $ids): array
     {
+        if ([] === $ids) {
+            return [];
+        }
+
         $indexed = [];
-        foreach ($this->findAll() as $container) {
-            $indexed[$container->getId()] = $container;
+        foreach (array_chunk($ids, 500) as $chunk) {
+            $qb = $this->createQueryBuilder('c')
+                ->where('c.id IN (:ids)')
+                ->setParameter('ids', $chunk);
+            foreach ($qb->getQuery()->getResult() as $container) {
+                \assert($container instanceof Container);
+                $indexed[$container->getId()] = $container;
+            }
         }
 
         return $indexed;

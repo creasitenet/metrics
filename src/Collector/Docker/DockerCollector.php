@@ -6,6 +6,7 @@ namespace App\Collector\Docker;
 
 use App\Metrics\ContainerLogsWriter;
 use App\Metrics\MetricsWriter;
+use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 
 final class DockerCollector
@@ -16,6 +17,7 @@ final class DockerCollector
         private DockerLogParser $logParser,
         private MetricsWriter $metricsWriter,
         private ContainerLogsWriter $logsWriter,
+        private EntityManagerInterface $entityManager,
         private LoggerInterface $logger,
         private int $logTail,
     ) {
@@ -41,10 +43,18 @@ final class DockerCollector
                     'error' => $e->getMessage(),
                 ]);
             }
+        }
 
-            if ($this->logTail > 0) {
-                $this->syncLogs($id);
+        foreach ($containers as $container) {
+            $id = (string) ($container['Id'] ?? '');
+            if ('' === $id || $this->logTail <= 0) {
+                continue;
             }
+
+            $this->syncLogs($id);
+            // Each log sync persists many ContainerLog rows; clear UoW so the
+            // subsequent MetricsWriter::flush() does not topologically sort them too.
+            $this->entityManager->clear();
         }
 
         return $this->metricsWriter->write(

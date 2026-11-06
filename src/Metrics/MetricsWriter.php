@@ -22,7 +22,8 @@ final class MetricsWriter
     public function write(DockerCollection $collection): int
     {
         return $this->entityManager->wrapInTransaction(function () use ($collection): int {
-            $containers = $this->containerRepository->indexedById();
+            $liveIds = array_keys($collection->containers);
+            $containers = $this->containerRepository->findIndexedByIds($liveIds);
             $written = 0;
 
             foreach ($collection->containers as $id => $snapshot) {
