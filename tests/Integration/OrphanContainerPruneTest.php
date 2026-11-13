@@ -11,14 +11,15 @@ use App\Dto\DockerCollection;
 use App\Dto\HostSample;
 use App\Entity\Container;
 use App\Entity\ContainerLog;
-use App\Entity\ContainerSample as ContainerSampleEntity;
-use App\Entity\HostSample as HostSampleEntity;
+use App\Entity\HostState;
+use App\Entity\MetricBucket;
 use App\Metrics\ContainerLogsWriter;
 use App\Metrics\MetricsWriter;
 use App\Metrics\OrphanContainerPruner;
 use App\Repository\ContainerLogRepository;
 use App\Repository\ContainerRepository;
 use App\Repository\ContainerSampleRepository;
+use App\Repository\MetricBucketRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\SchemaTool;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -33,6 +34,7 @@ final class OrphanContainerPruneTest extends KernelTestCase
     private ContainerRepository $containers;
     private ContainerSampleRepository $samples;
     private ContainerLogRepository $containerLogs;
+    private MetricBucketRepository $metricBuckets;
 
     protected function setUp(): void
     {
@@ -45,6 +47,7 @@ final class OrphanContainerPruneTest extends KernelTestCase
         $this->containers = $container->get(ContainerRepository::class);
         $this->samples = $container->get(ContainerSampleRepository::class);
         $this->containerLogs = $container->get(ContainerLogRepository::class);
+        $this->metricBuckets = $container->get(MetricBucketRepository::class);
 
         $schemaTool = new SchemaTool($this->entityManager);
         $metadata = $this->entityManager->getMetadataFactory()->getAllMetadata();
@@ -83,7 +86,7 @@ final class OrphanContainerPruneTest extends KernelTestCase
 
         self::assertSame(1, $result['kept']);
         self::assertSame(1, $result['containers']);
-        self::assertSame(1, $result['samples']);
+        self::assertGreaterThanOrEqual(1, $result['buckets']);
         self::assertSame(1, $result['logs']);
 
         $this->entityManager->clear();
@@ -92,16 +95,15 @@ final class OrphanContainerPruneTest extends KernelTestCase
         self::assertCount(1, $remainingContainers);
         self::assertSame($liveId, $remainingContainers[0]->getId());
 
-        $remainingSamples = $this->entityManager->getRepository(ContainerSampleEntity::class)->findAll();
-        self::assertCount(1, $remainingSamples);
-        self::assertSame($liveId, $remainingSamples[0]->getContainerId());
+        $goneBuckets = $this->metricBuckets->findBy(['containerId' => $goneId]);
+        self::assertCount(0, $goneBuckets);
 
         $remainingLogs = $this->entityManager->getRepository(ContainerLog::class)->findAll();
         self::assertCount(1, $remainingLogs);
         self::assertSame($liveId, $remainingLogs[0]->getContainerId());
     }
 
-    public function testPruneKeepsHostSamplesUntouched(): void
+    public function testPruneKeepsHostStateUntouched(): void
     {
         $now = new \DateTimeImmutable('2026-01-01T12:00:00+00:00');
         $goneId = str_repeat('c', 64);
@@ -118,16 +120,17 @@ final class OrphanContainerPruneTest extends KernelTestCase
 
         self::assertSame(0, $result['kept']);
         self::assertSame(1, $result['containers']);
-        self::assertSame(1, $result['samples']);
 
         $this->entityManager->clear();
 
         self::assertCount(0, $this->entityManager->getRepository(Container::class)->findAll());
-        self::assertCount(0, $this->entityManager->getRepository(ContainerSampleEntity::class)->findAll());
 
-        $hostSamples = $this->entityManager->getRepository(HostSampleEntity::class)->findAll();
-        self::assertCount(1, $hostSamples);
-        self::assertSame(30.0, $hostSamples[0]->getCpuPercent());
+        $hostState = $this->entityManager->getRepository(HostState::class)->find(HostState::SINGLETON_ID);
+        self::assertNotNull($hostState);
+        self::assertSame(30.0, $hostState->getCpuPercent());
+
+        $hostBuckets = $this->metricBuckets->findBy(['containerId' => MetricBucket::HOST_CONTAINER_ID]);
+        self::assertNotEmpty($hostBuckets);
     }
 
     protected function tearDown(): void
@@ -155,6 +158,7 @@ final class OrphanContainerPruneTest extends KernelTestCase
             $this->containers,
             $this->samples,
             $this->containerLogs,
+            $this->metricBuckets,
         );
     }
 }

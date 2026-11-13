@@ -6,9 +6,9 @@ namespace App\Metrics;
 
 use App\Dto\DockerCollection;
 use App\Entity\Container;
-use App\Entity\ContainerSample;
-use App\Entity\HostSample;
+use App\Entity\HostState;
 use App\Repository\ContainerRepository;
+use App\Repository\HostStateRepository;
 use Doctrine\ORM\EntityManagerInterface;
 
 final class MetricsWriter
@@ -16,6 +16,8 @@ final class MetricsWriter
     public function __construct(
         private EntityManagerInterface $entityManager,
         private ContainerRepository $containerRepository,
+        private HostStateRepository $hostStateRepository,
+        private MetricBucketWriter $metricBuckets,
     ) {
     }
 
@@ -57,37 +59,72 @@ final class MetricsWriter
                         ->setUpdatedAt(new \DateTimeImmutable());
                 }
 
-                $sample = $collection->sampleFor($id);
-                if (null === $sample) {
-                    continue;
-                }
+                $containers[$id]->setHealthStatus($snapshot->healthStatus);
 
-                $this->entityManager->persist(new ContainerSample(
-                    $sample->containerId,
-                    $sample->recordedAt,
-                    $sample->running,
-                    $sample->cpuPercent,
-                    $sample->memoryUsedBytes,
-                    $sample->memoryLimitBytes,
-                ));
-                ++$written;
+                $sample = $collection->sampleFor($id);
+                if (null !== $sample) {
+                    $container->applyLatestSample(
+                        $sample->running,
+                        $sample->cpuPercent,
+                        $sample->memoryUsedBytes,
+                        $sample->memoryLimitBytes,
+                        $sample->recordedAt,
+                    );
+                    $this->metricBuckets->recordContainer(
+                        $id,
+                        $sample->cpuPercent,
+                        $sample->memoryUsedBytes,
+                        $sample->recordedAt,
+                    );
+                    ++$written;
+                }
             }
 
             $host = $collection->host;
             if (null !== $host) {
-                $this->entityManager->persist(new HostSample(
-                    $host->recordedAt,
+                $state = $this->hostStateRepository->singleton();
+                if (null === $state) {
+                    $state = new HostState(
+                        $host->cpuPercent,
+                        $host->memoryUsedBytes,
+                        $host->memoryTotalBytes,
+                        $host->cpuCount,
+                        $host->containersTotal,
+                        $host->containersRunning,
+                        $host->containersStopped,
+                        $host->imagesTotal,
+                        $host->goroutines,
+                        $host->fdsOpen,
+                        $host->recordedAt,
+                        $host->nodeName,
+                        $host->serverVersion,
+                        $host->uptimeSeconds,
+                    );
+                    $this->entityManager->persist($state);
+                } else {
+                    $state->refresh(
+                        $host->cpuPercent,
+                        $host->memoryUsedBytes,
+                        $host->memoryTotalBytes,
+                        $host->cpuCount,
+                        $host->containersTotal,
+                        $host->containersRunning,
+                        $host->containersStopped,
+                        $host->imagesTotal,
+                        $host->goroutines,
+                        $host->fdsOpen,
+                        $host->recordedAt,
+                        $host->nodeName,
+                        $host->serverVersion,
+                        $host->uptimeSeconds,
+                    );
+                }
+
+                $this->metricBuckets->recordHost(
                     $host->cpuPercent,
                     $host->memoryUsedBytes,
-                    $host->memoryTotalBytes,
-                    $host->cpuCount,
-                    $host->containersTotal,
-                    $host->containersRunning,
-                    $host->containersStopped,
-                    $host->imagesTotal,
-                    $host->goroutines,
-                    $host->fdsOpen,
-                ));
+                    $host->recordedAt,
+                );
                 ++$written;
             }
 

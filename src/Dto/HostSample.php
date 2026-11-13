@@ -18,6 +18,9 @@ final readonly class HostSample
         public ?int $imagesTotal = null,
         public ?int $goroutines = null,
         public ?int $fdsOpen = null,
+        public ?string $nodeName = null,
+        public ?string $serverVersion = null,
+        public ?int $uptimeSeconds = null,
     ) {
     }
 }

@@ -24,6 +24,6 @@ final class HealthControllerTest extends WebTestCase
         $client->request('GET', '/');
 
         self::assertResponseIsSuccessful();
-        self::assertSelectorTextContains('h1', 'Containers');
+        self::assertSelectorExists('.sidebar');
     }
 }

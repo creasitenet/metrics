@@ -1,0 +1,11 @@
+<div id="log-panel" class="log-panel">
+    <header class="log-panel-head">
+        <span>Logs</span>
+        {% if selected %}<span class="muted">{{ selected.name }}</span>{% endif %}
+    </header>
+    <div class="log-scroll" data-log-panel>
+        <div id="log-lines">
+            {% include 'dashboard/_log_lines.html.twig' %}
+        </div>
+    </div>
+</div>

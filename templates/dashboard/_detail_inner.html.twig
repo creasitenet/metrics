@@ -1,0 +1,53 @@
+{% set container_chart_metrics = ['docker.container.cpu_percent', 'docker.container.memory_used_bytes'] %}
+
+{% if selected %}
+<div class="detail-hero">
+    <header class="detail-hero-info">
+        <h1 class="detail-title">
+            <span class="detail-name">{{ selected.name }}</span>
+            {% if selected.health_status %}
+                <span class="health-tag health-{{ selected.health_status }}" title="Healthcheck">{{ selected.health_status }}</span>
+            {% endif %}
+        </h1>
+        <p class="detail-meta muted">
+            <span class="state-pill state-{{ selected.state|lower }}">{{ selected.state }}</span>
+            <code>{{ selected.short_id }}</code>
+            {{ selected.image }}
+            {% if selected.running_for %}
+                <span class="sep">•</span><span>up {{ selected.running_for }}</span>
+            {% endif %}
+        </p>
+    </header>
+
+    <section class="detail-hero-charts">
+        <div class="spark-grid spark-grid-paired">
+            {% for name in container_chart_metrics %}
+                {% if container_chart[name] is defined and container_chart[name].count > 0 %}
+                <article class="spark-card">
+                    <header class="spark-card-head">
+                        <span class="label">{{ name == 'docker.container.cpu_percent' ? 'CPU' : 'RAM' }} <span class="chart-window muted">1h</span></span>
+                        <span class="spark-now">
+                            {% if name == 'docker.container.cpu_percent' %}
+                                {{ selected.cpu_percent is not null ? selected.cpu_percent|number_format(1) ~ '%' : '—' }}
+                            {% else %}
+                                {% if selected.memory_used_bytes is not null %}
+                                    {{ selected.memory_used_bytes|format_bytes(1) }}
+                                {% else %}—{% endif %}
+                            {% endif %}
+                        </span>
+                    </header>
+                    <div class="spark-body spark-body-chart">
+                        <canvas id="metric-chart-{{ name|replace({'.': '-'}) }}" aria-label="{{ name }}"></canvas>
+                    </div>
+                </article>
+                {% endif %}
+            {% endfor %}
+        </div>
+        <div hidden data-metrics-charts="container" data-metrics="{{ container_chart_metrics|join(',') }}" data-canvas-prefix="metric-chart">{{ container_chart|json_encode|e('html') }}</div>
+    </section>
+</div>
+{% else %}
+<div class="empty-state">
+    <p class="muted">Select a container from the sidebar.</p>
+</div>
+{% endif %}

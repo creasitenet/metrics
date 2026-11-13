@@ -1,0 +1,38 @@
+{% if host_meta %}
+<div class="topbar-host-meta" title="Docker host">
+    <p class="topbar-host-meta-line muted">
+        <span>{{ host_meta.hostname }}</span>
+        {% if host_meta.version %}<span class="sep">•</span><span>{{ host_meta.version }}</span>{% endif %}
+        {% if host_meta.containers is not null %}<span class="sep">•</span><span>{{ host_meta.containers }} containers</span>{% endif %}
+        {% if host_meta.uptime %}<span class="sep">•</span><span>up {{ host_meta.uptime }}</span>{% endif %}
+    </p>
+    <p class="topbar-host-stats">
+        <span class="topbar-host-stat">
+            <span class="stat-key muted">CPU</span>
+            {{ host_meta.cpu_percent|number_format(1) }}%
+            {% if host_meta.cpu_count %}<span class="stat-denom muted">/ {{ host_meta.cpu_count }} CPU</span>{% endif %}
+            {% if host_meta.cpu_pulse %}
+            <span class="host-pulse" aria-hidden="true">
+                {% for h in host_meta.cpu_pulse %}
+                    <span class="host-pulse-bar" style="--h: {{ h }}"></span>
+                {% endfor %}
+            </span>
+            {% endif %}
+        </span>
+        <span class="topbar-host-stat">
+            <span class="stat-key muted">RAM</span>
+            {% if host_meta.memory_used_bytes is not null %}
+                {{ host_meta.memory_used_bytes|format_bytes(1) }}
+            {% else %}—{% endif %}
+            {% if host_meta.memory_total_bytes %}<span class="stat-denom muted">/ {{ host_meta.memory_total_bytes|format_bytes(0) }}</span>{% endif %}
+            {% if host_meta.mem_pulse %}
+            <span class="host-pulse" aria-hidden="true">
+                {% for h in host_meta.mem_pulse %}
+                    <span class="host-pulse-bar" style="--h: {{ h }}"></span>
+                {% endfor %}
+            </span>
+            {% endif %}
+        </span>
+    </p>
+</div>
+{% endif %}

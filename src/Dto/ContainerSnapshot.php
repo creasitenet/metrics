@@ -17,6 +17,7 @@ final readonly class ContainerSnapshot
         public ?string $composeWorkingDir = null,
         public ?string $composeConfigFiles = null,
         public ?string $group = null,
+        public ?string $healthStatus = null,
     ) {
     }
 }

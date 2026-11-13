@@ -71,6 +71,9 @@ final class DockerMetricsMapper
             $samples[$id] = new ContainerSample($id, $now, true, $cpu, $memoryUsed, $memoryLimit);
         }
 
+        $nodeName = $info['Name'] ?? null;
+        $serverVersion = $info['ServerVersion'] ?? null;
+
         $host = new HostSample(
             $now,
             $hostCpuSamples > 0 ? $hostCpuSum : 0.0,
@@ -83,6 +86,9 @@ final class DockerMetricsMapper
             isset($info['Images']) ? (int) $info['Images'] : null,
             isset($info['NGoroutines']) ? (int) $info['NGoroutines'] : null,
             isset($info['NFd']) ? (int) $info['NFd'] : null,
+            \is_string($nodeName) && '' !== $nodeName ? mb_substr($nodeName, 0, 255) : null,
+            \is_string($serverVersion) && '' !== $serverVersion ? mb_substr($serverVersion, 0, 64) : null,
+            HostUptime::seconds(),
         );
 
         return new DockerCollection($snapshots, $samples, $host);
@@ -106,17 +112,20 @@ final class DockerMetricsMapper
             }
         }
 
+        $status = (string) ($container['Status'] ?? 'unknown');
+
         return new ContainerSnapshot(
             $id,
             $name,
             mb_substr((string) ($container['Image'] ?? ''), 0, 255),
             (string) ($container['State'] ?? 'unknown'),
-            (string) ($container['Status'] ?? 'unknown'),
+            $status,
             $compose['composeProject'] ?? null,
             $compose['composeService'] ?? null,
             $compose['composeWorkingDir'] ?? null,
             $compose['composeConfigFiles'] ?? null,
             $compose['group'] ?? null,
+            DockerHealthStatus::fromDockerStatus($status),
         );
     }
 

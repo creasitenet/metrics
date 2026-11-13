@@ -1,0 +1,14 @@
+<div
+    id="app-live"
+    class="app-shell"
+    hx-get="{{ path('app_dashboard_live', app.request.query.all) }}"
+    hx-trigger="every {{ refresh_seconds }}s[!document.hidden]"
+    hx-swap="none"
+>
+    {% include 'dashboard/_sidebar.html.twig' %}
+
+    <section class="app-main">
+        {% include 'dashboard/_detail.html.twig' %}
+        {% include 'dashboard/_log_panel.html.twig' %}
+    </section>
+</div>

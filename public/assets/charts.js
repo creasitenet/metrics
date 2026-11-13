@@ -1,37 +1,48 @@
 /**
  * Shared Chart.js helpers for HTMX-refreshed dashboard fragments.
- *
- * Fragments expose series as a hidden element:
- *   <div hidden data-metrics-charts="…" data-metrics="a,b" data-canvas-prefix="host-chart">JSON</div>
- *
- * Important: do not use <script type="application/json"> inside HTMX swaps — browsers/HTMX
- * can drop or ignore those nodes when injected via innerHTML/outerHTML.
  */
 (() => {
-  const chartOpts = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { display: false, grid: { display: false } },
-      y: { ticks: { color: '#7e857d' }, grid: { color: 'rgba(255,255,255,.07)' } },
-    },
-  };
-
-  /** @type {Map<string, {destroy: Function, resize: Function}>} */
-  const instances = new Map();
-
-  function destroyAll() {
-    instances.forEach((chart) => {
-      try {
-        chart.destroy();
-      } catch {
-        // canvas may already be detached
-      }
-    });
-    instances.clear();
+  /** @param {number} bytes */
+  function formatBytes(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n < 0) return '';
+    if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GiB`;
+    if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MiB`;
+    if (n >= 1024) return `${Math.round(n / 1024)} KiB`;
+    return `${Math.round(n)} B`;
   }
+
+  /**
+   * @param {string} metricName
+   */
+  function chartOptions(metricName) {
+    const isBytes = metricName.endsWith('_bytes');
+    const isPercent = metricName.endsWith('_percent');
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false, grid: { display: false } },
+        y: {
+          ticks: {
+            color: '#8292a6',
+            maxTicksLimit: 4,
+            callback: isBytes
+              ? (/** @type {string|number} */ value) => formatBytes(value)
+              : isPercent
+                ? (/** @type {string|number} */ value) => `${value}%`
+                : (/** @type {string|number} */ value) => String(value),
+          },
+          grid: { color: 'rgba(255,255,255,.06)' },
+        },
+      },
+    };
+  }
+
+  /** @type {Map<string, import('chart.js').Chart>} */
+  const instances = new Map();
 
   /**
    * @param {ParentNode} root
@@ -60,39 +71,39 @@
         return;
       }
 
-      const existing = instances.get(canvasId);
-      if (existing) {
-        try {
-          existing.destroy();
-        } catch {
-          // ignore
-        }
-        instances.delete(canvasId);
-      }
+      const labels = data.labels || [];
+      const values = data.values || [];
 
-      // Chart.js refuses a second Chart on the same canvas; clear any orphan binding.
+      let chart = instances.get(canvasId);
       if (typeof window.Chart.getChart === 'function') {
-        const orphan = window.Chart.getChart(canvas);
-        if (orphan) {
-          orphan.destroy();
-        }
+        chart = chart || window.Chart.getChart(canvas) || undefined;
       }
 
-      const chart = new window.Chart(canvas, {
+      if (chart) {
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = values;
+        chart.data.datasets[0].pointRadius = values.length > 100 ? 0 : 2;
+        chart.update('none');
+        requestAnimationFrame(() => chart.resize());
+        instances.set(canvasId, chart);
+        return;
+      }
+
+      chart = new window.Chart(canvas, {
         type: 'line',
         data: {
-          labels: data.labels || [],
+          labels,
           datasets: [{
-            data: data.values || [],
-            borderColor: '#d7ff45',
-            backgroundColor: 'rgba(215,255,69,.08)',
+            data: values,
+            borderColor: '#45d6b3',
+            backgroundColor: 'rgba(69, 214, 179, .12)',
             fill: true,
             borderWidth: 2,
-            pointRadius: (data.values || []).length > 100 ? 0 : 2,
+            pointRadius: values.length > 100 ? 0 : 2,
             tension: 0.25,
           }],
         },
-        options: chartOpts,
+        options: chartOptions(name),
       });
       instances.set(canvasId, chart);
       requestAnimationFrame(() => chart.resize());
@@ -109,10 +120,22 @@
     });
   }
 
+  function pruneDetachedCharts() {
+    for (const [id, chart] of instances.entries()) {
+      const attached = chart.canvas?.isConnected;
+      if (!attached) {
+        try {
+          chart.destroy();
+        } catch {
+          // ignore
+        }
+        instances.delete(id);
+      }
+    }
+  }
+
   function refreshAfterHtmx() {
-    // outerHTML leaves Chart instances pointing at detached canvases with the same ids.
-    destroyAll();
-    // afterSettle: layout is done so canvas width/height are non-zero.
+    pruneDetachedCharts();
     boot(document);
   }
 

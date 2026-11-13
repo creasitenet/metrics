@@ -1,0 +1,16 @@
+{# HTMX poll: hx-swap="none" on #app-live — only OOB targets below. #}
+<div id="topbar-host-meta" hx-swap-oob="innerHTML">
+    {% include 'dashboard/_topbar_host_meta.html.twig' %}
+</div>
+
+<aside id="dashboard-sidebar" class="sidebar" aria-label="Containers" hx-swap-oob="morph">
+    {% include 'dashboard/_sidebar_inner.html.twig' %}
+</aside>
+
+<div id="detail-panel" class="detail-panel" hx-swap-oob="morph">
+    {% include 'dashboard/_detail_inner.html.twig' %}
+</div>
+
+<div id="log-lines" hx-swap-oob="innerHTML">
+    {% include 'dashboard/_log_lines.html.twig' %}
+</div>

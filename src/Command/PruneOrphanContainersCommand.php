@@ -33,10 +33,11 @@ final class PruneOrphanContainersCommand extends Command
         }
 
         $output->writeln(\sprintf(
-            '<info>Orphan prune done (kept %d live id(s)): %d container(s), %d sample(s), %d log row(s) removed.</info>',
+            '<info>Orphan prune done (kept %d live id(s)): %d container(s), %d legacy sample(s), %d bucket(s), %d log row(s) removed.</info>',
             $result['kept'],
             $result['containers'],
             $result['samples'],
+            $result['buckets'],
             $result['logs'],
         ));
 

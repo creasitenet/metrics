@@ -5,9 +5,8 @@ declare(strict_types=1);
 namespace App\Command;
 
 use App\Collector\Docker\DockerCollector;
+use App\Metrics\MetricsRetentionService;
 use App\Metrics\OrphanContainerPruner;
-use App\Repository\ContainerSampleRepository;
-use App\Repository\HostSampleRepository;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -23,13 +22,10 @@ final class CollectorLoopCommand extends Command
 
     public function __construct(
         private readonly DockerCollector $collector,
-        private readonly ContainerSampleRepository $containerSamples,
-        private readonly HostSampleRepository $hostSamples,
+        private readonly MetricsRetentionService $retention,
         private readonly OrphanContainerPruner $pruner,
         #[Autowire('%app.collector.interval_seconds%')]
         private readonly int $intervalSeconds,
-        #[Autowire('%app.metrics.retention_days%')]
-        private readonly int $retentionDays,
     ) {
         parent::__construct();
     }
@@ -94,17 +90,16 @@ final class CollectorLoopCommand extends Command
 
         $this->lastMaintenanceDay = $day;
 
-        if ($this->retentionDays > 0) {
-            $before = new \DateTimeImmutable(\sprintf('-%d days', $this->retentionDays));
-            $containerRows = $this->containerSamples->pruneBefore($before);
-            $hostRows = $this->hostSamples->pruneBefore($before);
-            $output->writeln(\sprintf(
-                'Pruned %d container sample(s) and %d host sample(s) older than %d day(s).',
-                $containerRows,
-                $hostRows,
-                $this->retentionDays,
-            ));
-        }
+        $pruned = $this->retention->pruneAll();
+        $output->writeln(\sprintf(
+            'Pruned metrics buckets (raw %d, 5m %d, 1h %d), legacy (%d container, %d host), %d log row(s).',
+            $pruned['raw'],
+            $pruned['rollup_5m'],
+            $pruned['rollup_1h'],
+            $pruned['legacy_container'],
+            $pruned['legacy_host'],
+            $pruned['logs'],
+        ));
 
         try {
             $result = $this->pruner->prune();
@@ -115,10 +110,11 @@ final class CollectorLoopCommand extends Command
         }
 
         $output->writeln(\sprintf(
-            'Pruned orphan data (kept %d live id(s)): %d container(s), %d sample(s), %d log row(s).',
+            'Pruned orphan data (kept %d live id(s)): %d container(s), %d legacy sample(s), %d bucket(s), %d log row(s).',
             $result['kept'],
             $result['containers'],
             $result['samples'],
+            $result['buckets'],
             $result['logs'],
         ));
     }

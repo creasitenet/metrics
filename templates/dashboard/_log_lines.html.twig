@@ -1,0 +1,15 @@
+{% if logs %}
+    <ul class="log-list-compact">
+        {% for log in logs %}
+            {% set plain = log.line|strip_ansi %}
+            <li class="log-line" data-stream="{{ log.stream }}">
+                {% if log.recordedAt %}
+                    <time>{{ log.recordedAt|date('H:i:s') }}</time>
+                {% endif %}
+                <span>{{ plain }}</span>
+            </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p class="muted log-empty">{% if selected %}Waiting for log lines…{% else %}No container selected.{% endif %}</p>
+{% endif %}

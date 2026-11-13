@@ -60,4 +60,15 @@ final class ContainerLogRepository extends ServiceEntityRepository
 
         return (int) $qb->getQuery()->execute();
     }
+
+    public function pruneBefore(\DateTimeImmutable $before): int
+    {
+        return (int) $this->createQueryBuilder('l')
+            ->delete()
+            ->andWhere('l.recordedAt IS NOT NULL')
+            ->andWhere('l.recordedAt < :before')
+            ->setParameter('before', $before)
+            ->getQuery()
+            ->execute();
+    }
 }

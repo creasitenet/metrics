@@ -1,12 +1,20 @@
 parameters:
     env(COLLECTOR_INTERVAL): '30'
     env(DOCKER_SOCKET): '/var/run/docker.sock'
-    env(METRICS_RETENTION_DAYS): '30'
+    env(METRICS_RETENTION_DAYS): '2'
     env(METRICS_LOG_TAIL): '500'
+    env(METRICS_LOG_RETENTION_DAYS): '7'
+    env(METRICS_LOG_SYNC_INTERVAL): '300'
+    env(METRICS_RAW_HOURS): '2'
+    env(METRICS_CHART_MAX_POINTS): '400'
     app.collector.interval_seconds: '%env(int:COLLECTOR_INTERVAL)%'
     app.collector.docker_socket: '%env(DOCKER_SOCKET)%'
     app.metrics.retention_days: '%env(int:METRICS_RETENTION_DAYS)%'
     app.metrics.log_tail: '%env(int:METRICS_LOG_TAIL)%'
+    app.metrics.log_retention_days: '%env(int:METRICS_LOG_RETENTION_DAYS)%'
+    app.metrics.log_sync_interval_seconds: '%env(int:METRICS_LOG_SYNC_INTERVAL)%'
+    app.metrics.raw_hours: '%env(int:METRICS_RAW_HOURS)%'
+    app.metrics.chart_max_points: '%env(int:METRICS_CHART_MAX_POINTS)%'
 
 services:
     _defaults:
@@ -22,6 +30,10 @@ services:
     App\Collector\Docker\DockerEngineClient:
         arguments:
             $socketPath: '%app.collector.docker_socket%'
+
+    App\Collector\LogSyncGate:
+        arguments:
+            $syncIntervalSeconds: '%app.metrics.log_sync_interval_seconds%'
 
     App\Collector\Docker\DockerCollector:
         arguments:

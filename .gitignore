@@ -43,3 +43,6 @@ compose.override.yaml
 
 # Personal planning notes (optional local file)
 ROADMAP.md
+
+# Local copies of other experiments (not part of this repo)
+/sources/

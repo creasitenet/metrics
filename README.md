@@ -1,6 +1,6 @@
 # Metrics
 
-Metrics is a simple, open-source, self-hosted **Docker host monitor**. A dedicated collector reads the Docker Engine API through `docker.sock` and stores CPU/memory time series. The web UI only reads that database. No agents, no project tokens, no push API.
+Metrics is a simple, open-source, self-hosted **Docker host monitor**. A dedicated collector reads the Docker Engine API through `docker.sock` and stores CPU/memory time series in SQLite. The web UI only reads that database. No agents, no project tokens, no push API.
 
 ![Metrics dashboard](docs/screenshots/dashboard.png)
 
@@ -9,14 +9,16 @@ It runs on FrankenPHP (Caddy + PHP in one binary) with **SQLite** (single file i
 ## Features
 
 - Automatic Docker collection (host + containers) on a schedule
-- Host-level gauges (container counts, aggregated CPU/RAM)
-- Per-container charts (1h / 24h / 7d / 30d)
-- Compose grouping by folder → project → service (CPU/RAM totals per level)
-- Dozzle-style grouping via the `dev.dozzle.group` label
+- **Single-page UI** (`/` with `?c=` to select a container): grouped sidebar, detail strip, log tail
+- **Host context in the header** (node name, Docker version, container count, uptime when available, live CPU/RAM + subtle pulse)
+- **Container focus**: 1h CPU/RAM charts beside the title; host charts are not duplicated in the detail panel
+- Compose-style sidebar groups with per-group CPU/RAM totals; optional `dev.dozzle.group` label
+- Healthcheck state parsed from Docker `Status` (`healthy` / `unhealthy` / `starting`)
+- Live updates via HTMX (OOB patches + Idiomorph) so the layout does not rebuild every tick
 - No built-in login: access control is delegated to a reverse proxy (Caddy, Traefik, nginx)
 - Collector loop in a plain PHP process (no Messenger, no Scheduler)
-- Retention pruning for historical samples (and orphan GC for removed containers)
-- Bounded container log tails (last 500 lines per container by default, collector-synced)
+- Retention pruning for buckets, logs, and orphan GC for removed containers
+- Bounded container log tails (default 500 lines per container, collector-synced)
 
 ## Requirements
 
@@ -74,6 +76,18 @@ docker compose exec collector php bin/console app:collector:run -v
 
 ### Environment
 
+See `.env.dist` for the full list. Common knobs:
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `COLLECTOR_INTERVAL` | `30` | Sample period (seconds) |
+| `METRICS_RETENTION_DAYS` | `2` | Prune legacy `*_sample` rows and old bucket rollups |
+| `METRICS_RAW_HOURS` | `2` | Keep **30s** `metric_bucket` rows at least this long |
+| `METRICS_CHART_MAX_POINTS` | `400` | Cap points per chart series |
+| `METRICS_LOG_TAIL` | `500` | Max log lines stored per container |
+| `METRICS_LOG_SYNC_INTERVAL` | `300` | Seconds between log tail syncs per container |
+| `METRICS_LOG_RETENTION_DAYS` | `7` | Drop `container_log` rows older than this |
+
 ```bash
 cp .env.dist .env
 # Edit APP_SECRET (and METRICS_PORT / DEFAULT_URI), then:
@@ -84,17 +98,14 @@ SQLite data persists in `./var/data` (shared by `metrics` and `collector`). Only
 
 The collector is a plain PHP loop (`app:collector:loop`) that samples Docker every `COLLECTOR_INTERVAL` seconds and runs the daily retention/orphan maintenance on its first cycle of the day. It stops cleanly on `SIGTERM` / `SIGINT`, so `docker compose stop` never kills it mid-write.
 
-### Grouping
-
-The dashboard builds a **host → folder → project → service → container** tree and sums CPU/RAM at each level:
+### Sidebar grouping
 
 | Level | Source |
 |-------|--------|
-| Folder | `com.docker.compose.project.working_dir` |
-| Project | `dev.dozzle.group`, else `com.docker.compose.project` |
-| Service | `com.docker.compose.service`, else the container name |
+| Group name | `dev.dozzle.group`, else `com.docker.compose.project`, else *Other containers* |
+| Container row | Name, state, health tag (if any), last CPU/RAM |
 
-Containers without those labels are grouped under *Other containers* / *No Compose project* / *No service*.
+Containers without Compose labels land in **Other containers**.
 
 ## Operations
 
@@ -110,23 +121,23 @@ docker compose exec metrics wget -qO- http://127.0.0.1/healthz
 
 ### Retention
 
-Two maintenance jobs run once a day from the `collector` (needs Docker socket for orphan GC):
+Daily maintenance runs on the collector’s first cycle of each day (Docker socket needed for orphan GC):
 
-| When | What |
-|------|------|
-| First cycle of the day | `container_sample` / `host_sample` rows older than `METRICS_RETENTION_DAYS` (default **30**) |
-| First cycle of the day | `container` / `container_sample` / `container_log` rows for containers **removed** from Docker (`?all=1`, so stopped containers are kept) |
+| Action | Detail |
+|--------|--------|
+| Raw buckets | Delete **30s** `metric_bucket` rows older than `METRICS_RAW_HOURS` |
+| Legacy samples | Prune `container_sample` / `host_sample` if present, older than `METRICS_RETENTION_DAYS` |
+| Logs | Prune `container_log` older than `METRICS_LOG_RETENTION_DAYS` |
+| Orphans | Remove DB rows for containers no longer in `docker ps -a` |
 
-Host samples are never pruned by the orphan job, and no container row is dropped while Docker still knows it.
+The UI charts **one hour** of **30s** buckets. Live gauges come from `host_state` and `container.last_*` columns updated each collect.
+
+Reclaim disk after a large prune: `docker compose exec metrics php bin/console app:sqlite:vacuum` (stop collector first on busy hosts).
 
 Manual run:
 
 ```bash
 docker compose exec metrics php bin/console app:sample:prune
-# or override:
-docker compose exec metrics php bin/console app:sample:prune --days=7
-
-# Orphans (compare DB vs Docker inventory):
 docker compose exec collector php bin/console app:orphan-containers:prune
 ```
 
@@ -150,6 +161,17 @@ docker compose exec metrics php bin/console about
 
 - Empty charts: wait for a collector tick, then run `app:collector:run` in the collector container.
 - Collector logs “Docker socket is not readable”: check the socket mount and permissions.
+- After pulling a UI/storage upgrade, run pending migrations (see below).
+
+### Upgrading
+
+```bash
+docker compose pull   # or rebuild from source
+docker compose exec metrics php bin/console doctrine:migrations:migrate --no-interaction
+docker compose up -d
+```
+
+Recent schema changes include `metric_bucket`, `host_state`, `container.last_*` gauges, `health_status`, host `node_name` / `server_version` / `uptime_seconds`. Always migrate before relying on the new dashboard.
 
 ## Local installation without Docker Compose
 
@@ -190,27 +212,32 @@ vendor/bin/php-cs-fixer fix --dry-run --diff
 ## Architecture
 
 ```text
-docker.sock → collector (loop) → MetricsWriter → container / container_sample / host_sample
-                                                        ↓
-                                            metrics dashboard (DB only)
+docker.sock → collector (loop) → MetricsWriter → host_state + container gauges
+                        │                      → metric_bucket (30s)
+                        │                      → container / container_log
+                        ↓
+              metrics dashboard (DB only, HTMX partial sync)
 ```
 
 - `src/Collector/Docker/`: Engine client, mapper, collector
-- `src/Metrics/MetricsWriter.php`: transactional container + sample writes
+- `src/Metrics/MetricsWriter.php`: transactional writes (no new `*_sample` rows on the hot path)
 - `src/Command/CollectorLoopCommand.php`: sampling loop + daily maintenance (SIGTERM/SIGINT aware)
-- `src/Entity/`: `Container` (metadata), `ContainerSample` (history), `HostSample` (host history), `ContainerLog`
+- `src/Controller/DashboardController.php`: `/`, `/partials/dashboard` (OOB sync), legacy `/containers/{id}` redirect
 - `compose.yaml`: FrankenPHP `metrics` (UI) + `collector` (socket); SQLite volume shared
 
-### Data model
+### Data model (current)
 
-| Table | Holds | Pruned by |
-|-------|-------|-----------|
-| `container` | Identity + Compose/Dozzle labels of each container | Orphan GC |
-| `container_sample` | CPU, RAM and running state over time | Retention + orphan GC |
-| `host_sample` | Host CPU, RAM, container/image counts over time | Retention |
-| `container_log` | Last N log lines per container | Orphan GC |
+| Table / row | Holds | Pruned by |
+|-------------|--------|-----------|
+| `container` | Identity, Compose/Dozzle labels, `last_*` gauges, `health_status` | Orphan GC |
+| `host_state` | Singleton live host snapshot (CPU, RAM, counts, Docker identity) | — |
+| `metric_bucket` | Time series (30s; host id `__host__` + per-container) | `METRICS_RAW_HOURS` / retention |
+| `container_log` | Tail of stdout/stderr lines | Log retention + orphan GC |
+| `container_sample` / `host_sample` | Legacy history (if any remain) | Retention prune |
 
-CPU follows the `docker stats` scale: **100 % = one fully used core**.
+CPU follows the `docker stats` scale: **100 % = one fully used core** (aggregated host CPU can exceed 100 %).
+
+Host **uptime** in the header is filled from `/proc/uptime` when the collector runs on Linux (not on Docker Desktop macOS). Container **up …** comes from the Docker `Status` string.
 
 ## Security
 

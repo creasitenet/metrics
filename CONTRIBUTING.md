@@ -12,6 +12,8 @@ php bin/console doctrine:migrations:migrate --no-interaction
 
 Run the collector in one terminal (`php bin/console app:collector:loop`) and the web app in another (`symfony server:start`), or use `docker compose up`.
 
+Dashboard work lives under `templates/dashboard/`, `public/assets/`, and `src/Controller/DashboardController.php`. After UI changes, run `php bin/console lint:twig templates` and reload with migrations applied.
+
 ## Before a pull request
 
 ```bash

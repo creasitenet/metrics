@@ -47,6 +47,24 @@ class Container
     #[ORM\Column(type: 'datetimetz_immutable')]
     private \DateTimeImmutable $updatedAt;
 
+    #[ORM\Column(type: 'float', nullable: true)]
+    private ?float $lastCpuPercent = null;
+
+    #[ORM\Column(type: 'bigint', nullable: true)]
+    private ?int $lastMemoryUsedBytes = null;
+
+    #[ORM\Column(type: 'bigint', nullable: true)]
+    private ?int $lastMemoryLimitBytes = null;
+
+    #[ORM\Column(type: 'boolean', nullable: true)]
+    private ?bool $lastRunning = null;
+
+    #[ORM\Column(type: 'datetimetz_immutable', nullable: true)]
+    private ?\DateTimeImmutable $sampledAt = null;
+
+    #[ORM\Column(length: 16, nullable: true)]
+    private ?string $healthStatus = null;
+
     public function __construct(
         string $id,
         string $name,
@@ -193,6 +211,59 @@ class Container
     public function setUpdatedAt(\DateTimeImmutable $updatedAt): self
     {
         $this->updatedAt = $updatedAt;
+
+        return $this;
+    }
+
+    public function getLastCpuPercent(): ?float
+    {
+        return $this->lastCpuPercent;
+    }
+
+    public function getLastMemoryUsedBytes(): ?int
+    {
+        return $this->lastMemoryUsedBytes;
+    }
+
+    public function getLastMemoryLimitBytes(): ?int
+    {
+        return $this->lastMemoryLimitBytes;
+    }
+
+    public function isLastRunning(): ?bool
+    {
+        return $this->lastRunning;
+    }
+
+    public function getSampledAt(): ?\DateTimeImmutable
+    {
+        return $this->sampledAt;
+    }
+
+    public function getHealthStatus(): ?string
+    {
+        return $this->healthStatus;
+    }
+
+    public function setHealthStatus(?string $healthStatus): self
+    {
+        $this->healthStatus = $healthStatus;
+
+        return $this;
+    }
+
+    public function applyLatestSample(
+        bool $running,
+        ?float $cpuPercent,
+        ?int $memoryUsedBytes,
+        ?int $memoryLimitBytes,
+        \DateTimeImmutable $sampledAt,
+    ): self {
+        $this->lastRunning = $running;
+        $this->lastCpuPercent = $cpuPercent;
+        $this->lastMemoryUsedBytes = $memoryUsedBytes;
+        $this->lastMemoryLimitBytes = $memoryLimitBytes;
+        $this->sampledAt = $sampledAt;
 
         return $this;
     }

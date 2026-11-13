@@ -1,0 +1,60 @@
+    <div class="sidebar-head">
+        <span>Containers</span>
+        <span class="muted">{{ container_count }}</span>
+    </div>
+    <input
+        type="search"
+        class="search"
+        placeholder="filter…"
+        aria-label="Filter containers"
+        data-sidebar-filter
+        autocomplete="off"
+        hx-preserve
+    >
+
+    <div class="sidebar-groups">
+        {% for group in groups %}
+        <details class="sidebar-group" data-group-slug="{{ group.slug }}" open>
+            <summary class="sidebar-group-summary">
+                <span class="group-chevron" aria-hidden="true"></span>
+                <span class="group-title">{{ group.name }}</span>
+                <span class="group-totals muted">
+                    {{ group.containers|length }}
+                    · {{ group.cpu_percent|number_format(0) }}%
+                    · {{ group.memory_used_bytes|format_bytes(0) }}
+                </span>
+            </summary>
+            <ul class="sidebar-list">
+                {% for c in group.containers %}
+                <li>
+                    <a
+                        class="sidebar-row{{ c.selected ? ' is-active' : '' }}"
+                        href="{{ path('app_dashboard', {c: c.short_id}) }}"
+                        data-name="{{ c.name|lower }}"
+                        data-image="{{ c.image|lower }}"
+                        data-group="{{ group.name|lower }}"
+                        data-state="{{ c.state|lower }}"
+                    >
+                        <span class="state-dot state-{{ c.state|lower }}"></span>
+                        <span class="sidebar-row-main">
+                            <span class="sidebar-name-line">
+                                <span class="sidebar-name">{{ c.name }}</span>
+                                {% if c.health_status %}
+                                    <span class="health-tag health-{{ c.health_status }}">{{ c.health_status }}</span>
+                                {% endif %}
+                            </span>
+                            <span class="sidebar-meta muted">
+                                {% if c.cpu_percent is not null %}{{ c.cpu_percent|number_format(0) }}%{% else %}—{% endif %}
+                                ·
+                                {% if c.memory_used_bytes is not null %}{{ c.memory_used_bytes|format_bytes(0) }}{% else %}—{% endif %}
+                            </span>
+                        </span>
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </details>
+        {% else %}
+        <p class="empty muted">No containers in the database yet.</p>
+        {% endfor %}
+    </div>

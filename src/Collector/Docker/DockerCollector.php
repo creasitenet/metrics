@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Collector\Docker;
 
+use App\Collector\LogSyncGate;
 use App\Metrics\ContainerLogsWriter;
 use App\Metrics\MetricsWriter;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 final class DockerCollector
 {
@@ -19,6 +21,8 @@ final class DockerCollector
         private ContainerLogsWriter $logsWriter,
         private EntityManagerInterface $entityManager,
         private LoggerInterface $logger,
+        private LogSyncGate $logSyncGate,
+        #[Autowire('%app.metrics.log_tail%')]
         private int $logTail,
     ) {
     }
@@ -48,6 +52,10 @@ final class DockerCollector
         foreach ($containers as $container) {
             $id = (string) ($container['Id'] ?? '');
             if ('' === $id || $this->logTail <= 0) {
+                continue;
+            }
+
+            if (!$this->logSyncGate->shouldSync($id)) {
                 continue;
             }
 

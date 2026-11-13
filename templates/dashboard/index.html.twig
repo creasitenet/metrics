@@ -1,24 +1,87 @@
 {% extends 'base.html.twig' %}
 
-{% block title %}Docker host — Metrics{% endblock %}
+{% block title %}Docker — Metrics{% endblock %}
+
+{% block topbar_center %}
+<div id="topbar-host-meta">
+    {% include 'dashboard/_topbar_host_meta.html.twig' %}
+</div>
+{% endblock %}
+
+{% block topbar_status %}
+<span class="status-pill{{ collector.ok ? ' is-live' : ' is-stale' }}" title="{% if collector.sampled_at %}Last host sample {{ collector.sampled_at|date('Y-m-d H:i:s T') }}{% else %}Collector has not written host_state yet{% endif %}">
+    <i></i> {{ collector.label }}
+</span>
+{% endblock %}
 
 {% block body %}
-<div class="page-head project-head">
-    <div>
-        <span class="eyebrow">DOCKER HOST</span>
-        <h1>Containers</h1>
-    </div>
-    <nav class="periods" aria-label="Period">
-        {% for key, label in {'1h':'1 hour','24h':'24 hours','7d':'7 days','30d':'30 days'} %}
-            <a class="{{ period == key ? 'active' : '' }}" href="{{ path('app_dashboard', {period: key}) }}">{{ label }}</a>
-        {% endfor %}
-    </nav>
-</div>
-
-{% include 'dashboard/_live.html.twig' %}
+{% include 'dashboard/_app_live.html.twig' %}
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ asset('assets/vendor/chart.umd.min.js') }}"></script>
 <script src="{{ asset('assets/charts.js') }}"></script>
+<script>
+(() => {
+  const storeKey = 'metrics.sidebar.groups';
+  const readCollapsed = () => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(storeKey) || '[]'));
+    } catch {
+      return new Set();
+    }
+  };
+  const writeCollapsed = (set) => {
+    localStorage.setItem(storeKey, JSON.stringify([...set]));
+  };
+  const applyGroupMemory = (root = document) => {
+    const collapsed = readCollapsed();
+    root.querySelectorAll('details.sidebar-group').forEach((el) => {
+      if (!(el instanceof HTMLDetailsElement)) return;
+      const slug = el.dataset.groupSlug || '';
+      if (slug && collapsed.has(slug)) {
+        el.open = false;
+      }
+    });
+  };
+  const bindGroupMemory = (root = document) => {
+    root.querySelectorAll('details.sidebar-group').forEach((el) => {
+      if (!(el instanceof HTMLDetailsElement)) return;
+      el.addEventListener('toggle', () => {
+        const slug = el.dataset.groupSlug || '';
+        if (!slug) return;
+        const collapsed = readCollapsed();
+        if (el.open) {
+          collapsed.delete(slug);
+        } else {
+          collapsed.add(slug);
+        }
+        writeCollapsed(collapsed);
+      });
+    });
+  };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    applyGroupMemory();
+    bindGroupMemory();
+  });
+  document.body.addEventListener('htmx:afterSettle', () => {
+    applyGroupMemory();
+    bindGroupMemory();
+  });
+
+  document.addEventListener('input', (ev) => {
+    const input = ev.target;
+    if (!(input instanceof HTMLInputElement) || !input.matches('[data-sidebar-filter]')) return;
+    const q = input.value.trim().toLowerCase();
+    document.querySelectorAll('.sidebar-row').forEach((row) => {
+      const hay = [row.dataset.name, row.dataset.image, row.dataset.group, row.dataset.state].join(' ');
+      const li = row.closest('li');
+      if (li instanceof HTMLElement) {
+        li.style.display = q === '' || hay.includes(q) ? '' : 'none';
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}

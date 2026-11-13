@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Collector\Docker\DockerContainerUptime;
 use App\Entity\Container;
-use App\Entity\ContainerSample;
-use App\Entity\HostSample;
+use App\Entity\HostState;
 
 final class SeriesBuilder
 {
@@ -23,25 +23,26 @@ final class SeriesBuilder
     public const CONTAINER_CPU_PERCENT = 'docker.container.cpu_percent';
     public const CONTAINER_MEMORY_USED = 'docker.container.memory_used_bytes';
     public const CONTAINER_MEMORY_LIMIT = 'docker.container.memory_limit_bytes';
-    public const CONTAINER_RUNNING = 'docker.container.running';
 
     /**
-     * @param list<Container>                $containers
-     * @param array<string, ContainerSample> $latestSamples keyed by container id
-     * @param list<HostSample>               $hostHistory
+     * @param list<Container>                                                                                                  $containers
+     * @param array<string, array{labels: list<string>, values: list<float>, latest: float, count: int, bucket_hint?: string}> $hostChartSeries
      *
-     * @return array{host: array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}>, containers: array<string, array<string, mixed>>}
+     * @return array{host: array<string, array{labels: list<string>, values: list<float>, latest: float, count: int, bucket_hint?: string}>, containers: array<string, array<string, mixed>>}
      */
-    public function buildDashboard(array $containers, array $latestSamples, array $hostHistory): array
+    public function buildDashboard(?HostState $hostState, array $containers, array $hostChartSeries): array
     {
-        $host = $this->hostSeries($hostHistory);
+        $hostSeries = array_merge($this->hostInfoTiles($hostState), $hostChartSeries);
+        if (null !== $hostState) {
+            $hostSeries = $this->ensureHostLiveGauges($hostState, $hostSeries);
+        }
         $rows = [];
 
         foreach ($containers as $container) {
             $id = $container->getId();
-            $sample = $latestSamples[$id] ?? null;
             $rows[$id] = [
                 'id' => $id,
+                'short_id' => substr($id, 0, 12),
                 'name' => $container->getName(),
                 'image' => $container->getImage(),
                 'state' => $container->getState(),
@@ -51,82 +52,89 @@ final class SeriesBuilder
                 'compose_working_dir' => $container->getComposeWorkingDir(),
                 'compose_config_files' => $container->getComposeConfigFiles(),
                 'group' => $container->getGroup(),
-                'running' => $sample?->isRunning() ?? false,
-                'cpu_percent' => $sample?->getCpuPercent(),
-                'memory_used_bytes' => $sample?->getMemoryUsedBytes(),
-                'memory_limit_bytes' => $sample?->getMemoryLimitBytes(),
-                'metrics' => [],
+                'running' => $container->isLastRunning() ?? false,
+                'cpu_percent' => $container->getLastCpuPercent(),
+                'memory_used_bytes' => $container->getLastMemoryUsedBytes(),
+                'memory_limit_bytes' => $container->getLastMemoryLimitBytes(),
+                'health_status' => $container->getHealthStatus(),
+                'running_for' => DockerContainerUptime::fromDockerStatus($container->getStatus()),
             ];
         }
 
         ksort($rows);
 
-        return ['host' => $host, 'containers' => $rows];
+        return ['host' => $hostSeries, 'containers' => $rows];
     }
 
     /**
-     * Per-container series, used by the container detail page.
-     *
-     * @param list<ContainerSample> $samples
-     *
      * @return array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}>
      */
-    public function buildContainerSeries(array $samples): array
+    private function hostInfoTiles(?HostState $host): array
     {
-        $series = [];
-
-        foreach ($samples as $sample) {
-            $label = $sample->getRecordedAt()->format(\DATE_ATOM);
-
-            $this->append($series, self::CONTAINER_CPU_PERCENT, $label, $sample->getCpuPercent());
-            $this->append($series, self::CONTAINER_MEMORY_USED, $label, $sample->getMemoryUsedBytes());
-            $this->append($series, self::CONTAINER_MEMORY_LIMIT, $label, $sample->getMemoryLimitBytes());
-            $this->append($series, self::CONTAINER_RUNNING, $label, $sample->isRunning() ? 1.0 : 0.0);
+        if (null === $host) {
+            return [];
         }
 
-        return $series;
+        $at = $host->getSampledAt()->format(\DATE_ATOM);
+        $tiles = [];
+
+        $this->setTile($tiles, self::HOST_CPU_COUNT, $at, $host->getCpuCount());
+        $this->setTile($tiles, self::HOST_MEMORY_TOTAL, $at, $host->getMemoryTotalBytes());
+        $this->setTile($tiles, self::HOST_IMAGES_TOTAL, $at, $host->getImagesTotal());
+        $this->setTile($tiles, self::HOST_GOROUTINES, $at, $host->getGoroutines());
+        $this->setTile($tiles, self::HOST_FDS_OPEN, $at, $host->getFdsOpen());
+        $this->setTile($tiles, self::CONTAINERS_TOTAL, $at, $host->getContainersTotal());
+        $this->setTile($tiles, self::CONTAINERS_RUNNING, $at, $host->getContainersRunning());
+        $this->setTile($tiles, self::CONTAINERS_STOPPED, $at, $host->getContainersStopped());
+
+        return $tiles;
     }
 
     /**
-     * @param list<HostSample> $history
+     * @param array<string, array{labels: list<string>, values: list<float>, latest: float, count: int, bucket_hint?: string}> $host
      *
-     * @return array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}>
+     * @return array<string, array{labels: list<string>, values: list<float>, latest: float, count: int, bucket_hint?: string}>
      */
-    private function hostSeries(array $history): array
+    private function ensureHostLiveGauges(HostState $hostState, array $host): array
     {
-        $series = [];
+        $at = $hostState->getSampledAt()->format(\DATE_ATOM);
 
-        foreach ($history as $sample) {
-            $label = $sample->getRecordedAt()->format(\DATE_ATOM);
-
-            $this->append($series, self::HOST_CPU_PERCENT, $label, $sample->getCpuPercent());
-            $this->append($series, self::HOST_MEMORY_USED, $label, $sample->getMemoryUsedBytes());
-            $this->append($series, self::HOST_MEMORY_TOTAL, $label, $sample->getMemoryTotalBytes());
-            $this->append($series, self::HOST_CPU_COUNT, $label, $sample->getCpuCount());
-            $this->append($series, self::HOST_IMAGES_TOTAL, $label, $sample->getImagesTotal());
-            $this->append($series, self::HOST_GOROUTINES, $label, $sample->getGoroutines());
-            $this->append($series, self::HOST_FDS_OPEN, $label, $sample->getFdsOpen());
-            $this->append($series, self::CONTAINERS_TOTAL, $label, $sample->getContainersTotal());
-            $this->append($series, self::CONTAINERS_RUNNING, $label, $sample->getContainersRunning());
-            $this->append($series, self::CONTAINERS_STOPPED, $label, $sample->getContainersStopped());
+        if (!isset($host[self::HOST_CPU_PERCENT]) || 0 === $host[self::HOST_CPU_PERCENT]['count']) {
+            $host[self::HOST_CPU_PERCENT] = [
+                'labels' => [$at],
+                'values' => [$hostState->getCpuPercent()],
+                'latest' => $hostState->getCpuPercent(),
+                'count' => 1,
+            ];
         }
 
-        return $series;
+        $mem = $hostState->getMemoryUsedBytes();
+        if (null !== $mem && (!isset($host[self::HOST_MEMORY_USED]) || 0 === $host[self::HOST_MEMORY_USED]['count'])) {
+            $host[self::HOST_MEMORY_USED] = [
+                'labels' => [$at],
+                'values' => [(float) $mem],
+                'latest' => (float) $mem,
+                'count' => 1,
+            ];
+        }
+
+        return $host;
     }
 
     /**
-     * @param array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}> $series
+     * @param array<string, array{labels: list<string>, values: list<float>, latest: float, count: int}> $tiles
      */
-    private function append(array &$series, string $name, string $label, int|float|null $value): void
+    private function setTile(array &$tiles, string $name, string $label, int|float|null $value): void
     {
         if (null === $value) {
             return;
         }
 
-        $series[$name] ??= ['labels' => [], 'values' => [], 'latest' => 0.0, 'count' => 0];
-        $series[$name]['labels'][] = $label;
-        $series[$name]['values'][] = (float) $value;
-        $series[$name]['latest'] = (float) $value;
-        ++$series[$name]['count'];
+        $tiles[$name] = [
+            'labels' => [$label],
+            'values' => [(float) $value],
+            'latest' => (float) $value,
+            'count' => 1,
+        ];
     }
 }
