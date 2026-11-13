@@ -141,6 +141,27 @@ final class DockerMetricsMapperTest extends TestCase
         self::assertNull($sample->memoryLimitBytes);
     }
 
+    public function testStoppedContainerWithoutStatsStillGetsNotRunningSample(): void
+    {
+        $now = new \DateTimeImmutable('2026-07-24T10:00:00+00:00');
+        $info = ['Containers' => 1, 'ContainersRunning' => 0, 'NCPU' => 2, 'MemTotal' => 1_000_000_000];
+        $containers = [[
+            'Id' => 'abcdef1234567890',
+            'Names' => ['/api'],
+            'Image' => 'api:1',
+            'State' => 'exited',
+            'Labels' => [],
+        ]];
+
+        $collection = (new DockerMetricsMapper())->map($info, $containers, [], $now);
+
+        $sample = $collection->sampleFor('abcdef1234567890');
+        self::assertNotNull($sample);
+        self::assertFalse($sample->running);
+        self::assertNull($sample->cpuPercent);
+        self::assertNull($sample->memoryUsedBytes);
+    }
+
     public function testHostCpuPercentIsSumOfContainersNotAverage(): void
     {
         $now = new \DateTimeImmutable('2026-07-24T10:00:00+00:00');

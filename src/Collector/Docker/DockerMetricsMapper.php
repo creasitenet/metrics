@@ -47,13 +47,12 @@ final class DockerMetricsMapper
 
             $snapshots[$id] = $this->containerSnapshot($container);
 
-            if (!isset($statsById[$id])) {
+            if ('running' !== ($container['State'] ?? '')) {
+                $samples[$id] = new ContainerSample($id, $now, false);
                 continue;
             }
 
-            $isRunning = 'running' === ($container['State'] ?? '');
-            if (!$isRunning) {
-                $samples[$id] = new ContainerSample($id, $now, false);
+            if (!isset($statsById[$id])) {
                 continue;
             }
 

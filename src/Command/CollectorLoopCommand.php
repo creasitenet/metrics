@@ -6,7 +6,6 @@ namespace App\Command;
 
 use App\Collector\Docker\DockerCollector;
 use App\Metrics\MetricsRetentionService;
-use App\Metrics\OrphanContainerPruner;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -23,7 +22,6 @@ final class CollectorLoopCommand extends Command
     public function __construct(
         private readonly DockerCollector $collector,
         private readonly MetricsRetentionService $retention,
-        private readonly OrphanContainerPruner $pruner,
         #[Autowire('%app.collector.interval_seconds%')]
         private readonly int $intervalSeconds,
     ) {
@@ -99,23 +97,6 @@ final class CollectorLoopCommand extends Command
             $pruned['legacy_container'],
             $pruned['legacy_host'],
             $pruned['logs'],
-        ));
-
-        try {
-            $result = $this->pruner->prune();
-        } catch (\Throwable $e) {
-            $output->writeln(\sprintf('<error>Orphan prune failed: %s</error>', $e->getMessage()));
-
-            return;
-        }
-
-        $output->writeln(\sprintf(
-            'Pruned orphan data (kept %d live id(s)): %d container(s), %d legacy sample(s), %d bucket(s), %d log row(s).',
-            $result['kept'],
-            $result['containers'],
-            $result['samples'],
-            $result['buckets'],
-            $result['logs'],
         ));
     }
 }

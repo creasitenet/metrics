@@ -25,11 +25,15 @@ final class OrphanContainerPruner
      * Compare DB container ids to the Docker inventory (running + stopped) and delete orphans.
      * Host samples are never touched.
      *
+     * @param list<string>|null $keepContainerIds Docker inventory; fetched from the engine when null
+     *
      * @return array{containers: int, samples: int, buckets: int, logs: int, kept: int}
      */
-    public function prune(): array
+    public function prune(?array $keepContainerIds = null): array
     {
-        $keepIds = $this->liveContainerIds();
+        $keepIds = null === $keepContainerIds
+            ? $this->liveContainerIds()
+            : array_values(array_unique(array_filter($keepContainerIds, static fn (string $id): bool => '' !== $id)));
 
         $samples = $this->samples->deleteOrphanedByContainerIds($keepIds);
         $buckets = $this->metricBuckets->deleteOrphanedContainers($keepIds);

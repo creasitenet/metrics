@@ -17,8 +17,8 @@ final class ContainerRepository extends ServiceEntityRepository
     }
 
     /**
-     * Load only rows for the given Docker container ids (typically running
-     * containers). Avoids findAll() which pulls thousands of orphan rows into RAM.
+     * Load only rows for the given Docker container ids (the engine inventory,
+     * running + stopped). Avoids findAll() which pulls thousands of orphan rows into RAM.
      *
      * @param list<string> $ids
      *

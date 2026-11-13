@@ -7,6 +7,7 @@ namespace App\Collector\Docker;
 use App\Collector\LogSyncGate;
 use App\Metrics\ContainerLogsWriter;
 use App\Metrics\MetricsWriter;
+use App\Metrics\OrphanContainerPruner;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -19,6 +20,7 @@ final class DockerCollector
         private DockerLogParser $logParser,
         private MetricsWriter $metricsWriter,
         private ContainerLogsWriter $logsWriter,
+        private OrphanContainerPruner $pruner,
         private EntityManagerInterface $entityManager,
         private LoggerInterface $logger,
         private LogSyncGate $logSyncGate,
@@ -30,12 +32,12 @@ final class DockerCollector
     public function collect(): int
     {
         $info = $this->client->info();
-        $containers = $this->client->listContainers();
+        $containers = $this->client->listContainers(all: true);
         $statsById = [];
 
         foreach ($containers as $container) {
             $id = (string) ($container['Id'] ?? '');
-            if ('' === $id) {
+            if ('' === $id || 'running' !== ($container['State'] ?? '')) {
                 continue;
             }
 
@@ -51,7 +53,7 @@ final class DockerCollector
 
         foreach ($containers as $container) {
             $id = (string) ($container['Id'] ?? '');
-            if ('' === $id || $this->logTail <= 0) {
+            if ('' === $id || 'running' !== ($container['State'] ?? '') || $this->logTail <= 0) {
                 continue;
             }
 
@@ -65,9 +67,37 @@ final class DockerCollector
             $this->entityManager->clear();
         }
 
-        return $this->metricsWriter->write(
+        $written = $this->metricsWriter->write(
             $this->mapper->map($info, $containers, $statsById, new \DateTimeImmutable()),
         );
+
+        $this->pruneOrphans($containers);
+
+        return $written;
+    }
+
+    /**
+     * Reconcile on every cycle so containers recreated by `docker compose up`
+     * (new id, same name) do not linger as duplicate dashboard rows until the
+     * next daily maintenance.
+     *
+     * @param list<array<string, mixed>> $containers
+     */
+    private function pruneOrphans(array $containers): void
+    {
+        $keepIds = [];
+        foreach ($containers as $container) {
+            $id = (string) ($container['Id'] ?? '');
+            if ('' !== $id) {
+                $keepIds[] = $id;
+            }
+        }
+
+        try {
+            $this->pruner->prune($keepIds);
+        } catch (\Throwable $e) {
+            $this->logger->warning('Orphan prune failed: {error}', ['error' => $e->getMessage()]);
+        }
     }
 
     private function syncLogs(string $containerId): void

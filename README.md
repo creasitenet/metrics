@@ -17,7 +17,7 @@ It runs on FrankenPHP (Caddy + PHP in one binary) with **SQLite** (single file i
 - Live updates via HTMX (OOB patches + Idiomorph) so the layout does not rebuild every tick
 - No built-in login: access control is delegated to a reverse proxy (Caddy, Traefik, nginx)
 - Collector loop in a plain PHP process (no Messenger, no Scheduler)
-- Retention pruning for buckets, logs, and orphan GC for removed containers
+- Retention pruning for buckets and logs, plus orphan GC on every collector cycle
 - Bounded container log tails (default 500 lines per container, collector-synced)
 
 ## Requirements
@@ -96,7 +96,7 @@ ENV_FILE=.env docker compose up -d --build
 
 SQLite data persists in `./var/data` (shared by `metrics` and `collector`). Only the **collector** mounts `docker.sock` read-only.
 
-The collector is a plain PHP loop (`app:collector:loop`) that samples Docker every `COLLECTOR_INTERVAL` seconds and runs the daily retention/orphan maintenance on its first cycle of the day. It stops cleanly on `SIGTERM` / `SIGINT`, so `docker compose stop` never kills it mid-write.
+The collector is a plain PHP loop (`app:collector:loop`) that samples Docker every `COLLECTOR_INTERVAL` seconds, reconciles removed containers on every cycle, and runs daily retention maintenance on its first cycle of the day. It stops cleanly on `SIGTERM` / `SIGINT`, so `docker compose stop` never kills it mid-write.
 
 ### Sidebar grouping
 
@@ -121,14 +121,14 @@ docker compose exec metrics wget -qO- http://127.0.0.1/healthz
 
 ### Retention
 
-Daily maintenance runs on the collector’s first cycle of each day (Docker socket needed for orphan GC):
+Daily maintenance runs on the collector’s first cycle of each day. Orphan reconciliation runs on **every** collection cycle:
 
 | Action | Detail |
 |--------|--------|
 | Raw buckets | Delete **30s** `metric_bucket` rows older than `METRICS_RAW_HOURS` |
 | Legacy samples | Prune `container_sample` / `host_sample` if present, older than `METRICS_RETENTION_DAYS` |
 | Logs | Prune `container_log` older than `METRICS_LOG_RETENTION_DAYS` |
-| Orphans | Remove DB rows for containers no longer in `docker ps -a` |
+| Orphans | Every cycle: remove DB rows for containers no longer in `docker ps -a` (a Compose recreate gets a new id, so the old row must go) |
 
 The UI charts **one hour** of **30s** buckets. Live gauges come from `host_state` and `container.last_*` columns updated each collect.
 
@@ -221,7 +221,7 @@ docker.sock → collector (loop) → MetricsWriter → host_state + container ga
 
 - `src/Collector/Docker/`: Engine client, mapper, collector
 - `src/Metrics/MetricsWriter.php`: transactional writes (no new `*_sample` rows on the hot path)
-- `src/Command/CollectorLoopCommand.php`: sampling loop + daily maintenance (SIGTERM/SIGINT aware)
+- `src/Command/CollectorLoopCommand.php`: sampling loop + daily retention maintenance (SIGTERM/SIGINT aware)
 - `src/Controller/DashboardController.php`: `/`, `/partials/dashboard` (OOB sync), legacy `/containers/{id}` redirect
 - `compose.yaml`: FrankenPHP `metrics` (UI) + `collector` (socket); SQLite volume shared
 

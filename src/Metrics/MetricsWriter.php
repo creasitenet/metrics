@@ -31,6 +31,13 @@ final class MetricsWriter
             foreach ($collection->containers as $id => $snapshot) {
                 $container = $containers[$id] ?? null;
                 if (null === $container) {
+                    // Only track containers we have seen running; listing
+                    // `docker ps -a` would otherwise import every old stopped
+                    // container into the dashboard.
+                    if ('running' !== $snapshot->state) {
+                        continue;
+                    }
+
                     $container = new Container(
                         $id,
                         $snapshot->name,
