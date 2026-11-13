@@ -33,22 +33,23 @@ final class DockerCollector
     {
         $info = $this->client->info();
         $containers = $this->client->listContainers(all: true);
-        $statsById = [];
+        $runningIds = [];
 
         foreach ($containers as $container) {
             $id = (string) ($container['Id'] ?? '');
-            if ('' === $id || 'running' !== ($container['State'] ?? '')) {
-                continue;
+            if ('' !== $id && 'running' === ($container['State'] ?? '')) {
+                $runningIds[] = $id;
             }
+        }
 
-            try {
-                $statsById[$id] = $this->client->containerStats($id);
-            } catch (\Throwable $e) {
-                $this->logger->warning('Docker stats failed for {id}: {error}', [
-                    'id' => substr($id, 0, 12),
-                    'error' => $e->getMessage(),
-                ]);
-            }
+        $stats = $this->client->containerStatsMany($runningIds);
+        $statsById = $stats['stats'];
+
+        foreach ($stats['errors'] as $id => $error) {
+            $this->logger->warning('Docker stats failed for {id}: {error}', [
+                'id' => substr($id, 0, 12),
+                'error' => $error,
+            ]);
         }
 
         foreach ($containers as $container) {

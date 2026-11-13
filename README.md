@@ -80,12 +80,12 @@ See `.env.dist` for the full list. Common knobs:
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `COLLECTOR_INTERVAL` | `30` | Sample period (seconds) |
+| `COLLECTOR_INTERVAL` | `30` | Sample period **and** dashboard refresh (seconds); lower = fresher but more Docker/DB work |
 | `METRICS_RETENTION_DAYS` | `2` | Prune legacy `*_sample` rows and old bucket rollups |
-| `METRICS_RAW_HOURS` | `2` | Keep **30s** `metric_bucket` rows at least this long |
+| `METRICS_RAW_HOURS` | `2` | Keep raw `metric_bucket` rows (width = `COLLECTOR_INTERVAL`) at least this long |
 | `METRICS_CHART_MAX_POINTS` | `400` | Cap points per chart series |
 | `METRICS_LOG_TAIL` | `500` | Max log lines stored per container |
-| `METRICS_LOG_SYNC_INTERVAL` | `300` | Seconds between log tail syncs per container |
+| `METRICS_LOG_SYNC_INTERVAL` | `300` | Seconds between log tail syncs per container (logs only) |
 | `METRICS_LOG_RETENTION_DAYS` | `7` | Drop `container_log` rows older than this |
 
 ```bash
@@ -97,6 +97,8 @@ ENV_FILE=.env docker compose up -d --build
 SQLite data persists in `./var/data` (shared by `metrics` and `collector`). Only the **collector** mounts `docker.sock` read-only.
 
 The collector is a plain PHP loop (`app:collector:loop`) that samples Docker every `COLLECTOR_INTERVAL` seconds, reconciles removed containers on every cycle, and runs daily retention maintenance on its first cycle of the day. It stops cleanly on `SIGTERM` / `SIGINT`, so `docker compose stop` never kills it mid-write.
+
+The dashboard polls at the same period (minimum 5 s), so **live gauges cannot be fresher than `COLLECTOR_INTERVAL`**. Docker one-shot stats calls are fetched concurrently; a 10 s interval is a good balance for small/medium hosts, 5 s if the host runs only a few containers. Logs are refreshed independently via `METRICS_LOG_SYNC_INTERVAL` (default 5 min).
 
 ### Sidebar grouping
 
@@ -213,7 +215,7 @@ vendor/bin/php-cs-fixer fix --dry-run --diff
 
 ```text
 docker.sock → collector (loop) → MetricsWriter → host_state + container gauges
-                        │                      → metric_bucket (30s)
+                        │                      → metric_bucket (COLLECTOR_INTERVAL)
                         │                      → container / container_log
                         ↓
               metrics dashboard (DB only, HTMX partial sync)
@@ -225,13 +227,17 @@ docker.sock → collector (loop) → MetricsWriter → host_state + container ga
 - `src/Controller/DashboardController.php`: `/`, `/partials/dashboard` (OOB sync), legacy `/containers/{id}` redirect
 - `compose.yaml`: FrankenPHP `metrics` (UI) + `collector` (socket); SQLite volume shared
 
+### Vendored frontend assets
+
+`public/assets/vendor/` bundles HTMX, Idiomorph and Chart.js. The Idiomorph extension is patched in place: `isInlineSwap()` now returns `false` for non-morph swap styles because HTMX calls it for every OOB style (the unpatched version throws on `innerHTML`/`none` and aborts the OOB update). Re-apply that guard when upgrading the file.
+
 ### Data model (current)
 
 | Table / row | Holds | Pruned by |
 |-------------|--------|-----------|
 | `container` | Identity, Compose/Dozzle labels, `last_*` gauges, `health_status` | Orphan GC |
 | `host_state` | Singleton live host snapshot (CPU, RAM, counts, Docker identity) | — |
-| `metric_bucket` | Time series (30s; host id `__host__` + per-container) | `METRICS_RAW_HOURS` / retention |
+| `metric_bucket` | Time series (one bucket per `COLLECTOR_INTERVAL`; host id `__host__` + per-container) | `METRICS_RAW_HOURS` / retention |
 | `container_log` | Tail of stdout/stderr lines | Log retention + orphan GC |
 | `container_sample` / `host_sample` | Legacy history (if any remain) | Retention prune |
 

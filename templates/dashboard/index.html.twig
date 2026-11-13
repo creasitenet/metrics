@@ -39,36 +39,37 @@
     root.querySelectorAll('details.sidebar-group').forEach((el) => {
       if (!(el instanceof HTMLDetailsElement)) return;
       const slug = el.dataset.groupSlug || '';
-      if (slug && collapsed.has(slug)) {
-        el.open = false;
-      }
-    });
-  };
-  const bindGroupMemory = (root = document) => {
-    root.querySelectorAll('details.sidebar-group').forEach((el) => {
-      if (!(el instanceof HTMLDetailsElement)) return;
-      el.addEventListener('toggle', () => {
-        const slug = el.dataset.groupSlug || '';
-        if (!slug) return;
-        const collapsed = readCollapsed();
-        if (el.open) {
-          collapsed.delete(slug);
-        } else {
-          collapsed.add(slug);
-        }
-        writeCollapsed(collapsed);
-      });
+      if (!slug) return;
+      el.open = !collapsed.has(slug);
     });
   };
 
-  document.addEventListener('DOMContentLoaded', () => {
-    applyGroupMemory();
-    bindGroupMemory();
+  // Persist only explicit user toggles. Idiomorph re-applies the template's
+  // `open` attribute on every refresh; listening to `toggle` would treat that
+  // as a user action and erase the stored collapsed state.
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const summary = target.closest('summary.sidebar-group-summary');
+    if (!(summary instanceof HTMLElement)) return;
+    const group = summary.parentElement;
+    if (!(group instanceof HTMLDetailsElement)) return;
+    const slug = group.dataset.groupSlug || '';
+    if (!slug) return;
+    // The default <details> toggle runs after the click handler.
+    setTimeout(() => {
+      const collapsed = readCollapsed();
+      if (group.open) {
+        collapsed.delete(slug);
+      } else {
+        collapsed.add(slug);
+      }
+      writeCollapsed(collapsed);
+    }, 0);
   });
-  document.body.addEventListener('htmx:afterSettle', () => {
-    applyGroupMemory();
-    bindGroupMemory();
-  });
+
+  document.addEventListener('DOMContentLoaded', () => applyGroupMemory());
+  document.body.addEventListener('htmx:afterSettle', () => applyGroupMemory());
 
   document.addEventListener('input', (ev) => {
     const input = ev.target;

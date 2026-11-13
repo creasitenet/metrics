@@ -3,10 +3,9 @@
         {% for log in logs %}
             {% set plain = log.line|strip_ansi %}
             <li class="log-line" data-stream="{{ log.stream }}">
-                {% if log.recordedAt %}
-                    <time>{{ log.recordedAt|date('H:i:s') }}</time>
-                {% endif %}
-                <span>{{ plain }}</span>
+                <time>{% if log.recordedAt %}{{ log.recordedAt|date('H:i:s') }}{% endif %}</time>
+                <span class="log-stream log-stream-{{ log.stream }}">{{ log.stream|upper }}</span>
+                <span class="log-text">{{ plain }}</span>
             </li>
         {% endfor %}
     </ul>

@@ -5,9 +5,13 @@ declare(strict_types=1);
 namespace App\Collector\Docker;
 
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 final class DockerEngineClient
 {
+    /** Docker one-shot stats waits for a second sample; keep batches bounded. */
+    private const STATS_BATCH_SIZE = 16;
+
     public function __construct(
         private HttpClientInterface $httpClient,
         private string $socketPath,
@@ -40,6 +44,59 @@ final class DockerEngineClient
         return $this->getJson('/containers/'.rawurlencode($containerId).'/stats?stream=0');
     }
 
+    /**
+     * Fetch one-shot stats concurrently. Docker waits for a second sample on
+     * each request (~1-2 s), so sequential calls make a cycle grow linearly
+     * with the number of containers.
+     *
+     * @param list<string> $containerIds
+     *
+     * @return array{stats: array<string, array<string, mixed>>, errors: array<string, string>}
+     */
+    public function containerStatsMany(array $containerIds): array
+    {
+        if ([] === $containerIds) {
+            return ['stats' => [], 'errors' => []];
+        }
+
+        $this->assertSocketReadable();
+
+        $stats = [];
+        $errors = [];
+
+        foreach (array_chunk($containerIds, self::STATS_BATCH_SIZE) as $chunk) {
+            /** @var array<string, ResponseInterface> $responses */
+            $responses = [];
+
+            foreach ($chunk as $id) {
+                $responses[$id] = $this->httpClient->request('GET', 'http://localhost/containers/'.rawurlencode($id).'/stats?stream=0', [
+                    'timeout' => 8,
+                    'bindto' => $this->socketPath,
+                ]);
+            }
+
+            foreach ($responses as $id => $response) {
+                try {
+                    $status = $response->getStatusCode();
+                    if ($status < 200 || $status >= 300) {
+                        throw new \RuntimeException(\sprintf('Docker API stats returned HTTP %d.', $status));
+                    }
+
+                    $payload = $this->decode($response->getContent(false));
+                    if (!\is_array($payload) || array_is_list($payload)) {
+                        throw new \RuntimeException('Docker API stats returned an unexpected payload.');
+                    }
+
+                    $stats[$id] = $payload;
+                } catch (\Throwable $e) {
+                    $errors[$id] = $e->getMessage();
+                }
+            }
+        }
+
+        return ['stats' => $stats, 'errors' => $errors];
+    }
+
     public function containerLogs(string $containerId, int $tail = 100): string
     {
         $tail = max(1, $tail);
@@ -63,11 +120,16 @@ final class DockerEngineClient
         return $payload;
     }
 
-    private function request(string $path, float $timeout = 8): string
+    private function assertSocketReadable(): void
     {
         if (!is_readable($this->socketPath)) {
             throw new \RuntimeException(\sprintf('Docker socket is not readable: %s', $this->socketPath));
         }
+    }
+
+    private function request(string $path, float $timeout = 8): string
+    {
+        $this->assertSocketReadable();
 
         $response = $this->httpClient->request('GET', 'http://localhost'.$path, [
             'timeout' => $timeout,
